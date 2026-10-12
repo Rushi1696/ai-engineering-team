@@ -52,7 +52,7 @@ User
 | Architecture (requirements, design, workflow design, reviews, alignment, sync) | ✅ Complete — Approved |
 | EngineeringState Foundation (`state/`) | ✅ Complete and tested |
 | BaseAgent (`agents/base_agent.py`) | ✅ Complete and tested |
-| Graph Skeleton | ⬜ Not started |
+| Graph Skeleton (`workflows/`) | ✅ Complete and tested |
 | ProductManagerAgent | ⬜ Not started |
 | ArchitectAgent | ⬜ Not started |
 | TaskPlannerAgent | ⬜ Not started |
@@ -112,6 +112,13 @@ User
 > as an upstream documentation discrepancy, not resolved by adding a
 > fabricated field.
 
+> **Known behavior note (rejection_scope lifecycle):** Under `replace_reducer`
+> (Requirement 18 criterion 7), writing `None` is a no-op that preserves the existing
+> value. Consequently, once populated by `ReviewerAgent`, `rejection_scope` is never
+> cleared back to `None` in `EngineeringState`. Downstream consumers and routers must
+> gate on `workflow_status == "escalation_required"` AND `review_report.overall_status == "rejected"`
+> rather than inspecting `rejection_scope` alone.
+
 ### BaseAgent (`agents/base_agent.py`)
 
 Shared abstract base class inherited by all 11 concrete agents, derived
@@ -146,18 +153,27 @@ paths. Full suite (BaseAgent + pre-existing `state/` tests): **185
 passed, 1 skipped** (LangGraph-compile smoke test skips when
 `langgraph` is not installed in the environment).
 
+### Graph Skeleton (`workflows/`)
+
+LangGraph graph topology, routing, interrupt handling, and execution orchestration per `design.md` Section 6.1 and `workflow-design-revised.md` Section 3.
+
+- `workflows/constants.py` — Node names (`NODE_*`), workflow status strings (`STATUS_*`), human approval decisions (`APPROVAL_DECISION_*`), and routing mappings (`NEXT_AGENT_TO_NODE`, `REJECTION_SCOPE_TO_AGENT`, `AGENT_NAME_TO_NODE`).
+- `workflows/routers.py` — Pure conditional edge routers for all agent and synthetic nodes enforcing the strict 4-level precedence hierarchy (P1: deadline, P2: global debug cap, P3: human approval hold, P4: normal stage routing).
+- `workflows/interrupts.py` — `HumanApprovalNode` utilizing native LangGraph `interrupt()` and `Command(resume=...)` for human-in-the-loop review escalations and retry exhaustion holds.
+- `workflows/graph.py` — `build_graph()` constructing the StateGraph topology with 11 agent nodes, 3 synthetic nodes (`human_approval`, `deadline_enforcer`, `global_cap_handler`), and conditional routing edges.
+- `workflows/runner.py` — Pipeline runner invoking the compiled graph, initializing default configurations, and capturing final results.
+
+**Status: Complete and tested** — 77 workflow tests across `tests/workflows/` (routers, interrupts, graph structural & execution, runner). Full test suite: **262 tests passed** (0 failures, 2 warnings).
+
+> **Known notes:**
+> - (a) `deadline_exceeded` is never set by `BaseAgent`, so deadline enforcement is dormant until decided.
+> - (b) `runner` has no resume-after-restart and uses `MemorySaver`.
+
 ---
 
 ## Next Phase
 
-**Graph Skeleton** — LangGraph graph definition (`workflows/graph.py`),
-conditional edge routers (`workflows/routers.py`), human-approval
-interrupt node, and the pipeline entry point (`workflows/runner.py`),
-per `design.md` Section 6.1 (`workflows/` folder ownership) and
-`workflow-design-revised.md` Section 3 (topology, nodes, routing).
-
-Concrete agents (ProductManagerAgent through FinalProjectAgent) follow
-after the graph skeleton, per the roadmap.
+**ProductManagerAgent** (`agents/product_manager/`) — The first concrete pipeline agent, converting natural language user requirements into structured `ProductRequirements` artifact, per `design.md` Section 1.1 and Section 6.1.
 
 ---
 
