@@ -194,3 +194,40 @@ def test_cli_prompt_approval(monkeypatch):
 
     res = cli_prompt_approval(payload)
     assert res == {"decision": "approved", "notes": "LGTM"}
+
+
+def test_run_pipeline_rejects_malformed_deadline():
+    """run_pipeline raises ValueError if pipeline_deadline_at is malformed."""
+    agents = _build_happy_agents()
+    with pytest.raises(ValueError, match="Malformed ISO 8601 timestamp"):
+        run_pipeline(
+            project_name="MalformedDeadlineApp",
+            user_input="Build app",
+            agents=agents,
+            pipeline_deadline_at="not-a-valid-timestamp",
+        )
+
+
+def test_run_pipeline_rejects_already_expired_deadline():
+    """run_pipeline fails fast with ValueError if pipeline_deadline_at is already in the past."""
+    agents = _build_happy_agents()
+    with pytest.raises(ValueError, match="already in the past"):
+        run_pipeline(
+            project_name="ExpiredDeadlineApp",
+            user_input="Build app",
+            agents=agents,
+            pipeline_deadline_at="2020-01-01T00:00:00Z",
+        )
+
+
+def test_run_pipeline_accepts_valid_future_deadline():
+    """run_pipeline proceeds normally when pipeline_deadline_at is a valid future timestamp."""
+    agents = _build_happy_agents()
+    final_state = run_pipeline(
+        project_name="FutureDeadlineApp",
+        user_input="Build app",
+        agents=agents,
+        pipeline_deadline_at="2099-01-01T00:00:00Z",
+    )
+    assert final_state["workflow_status"] == STATUS_COMPLETED
+

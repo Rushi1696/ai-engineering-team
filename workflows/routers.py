@@ -12,6 +12,8 @@ Precedence order enforced across all routers (workflow-design-revised.md §3.4):
 Source of truth: workflow-design-revised.md Section 3.4 & Section 3.7.
 """
 
+from datetime import datetime, timezone
+
 from langgraph.graph import END
 
 from state.engineering_state import EngineeringState
@@ -48,16 +50,48 @@ from workflows.constants import (
 )
 
 
+def parse_iso_utc(value: str) -> datetime:
+    """Parse an ISO 8601 datetime string, treating trailing 'Z' and timezone-naive values as UTC.
+
+    Raises:
+        ValueError: if value is not a valid ISO 8601 datetime string.
+    """
+    if not isinstance(value, str):
+        raise ValueError(f"Invalid timestamp type: expected str, got {type(value).__name__}")
+
+    cleaned = value.strip()
+    if cleaned.endswith("Z") or cleaned.endswith("z"):
+        cleaned = cleaned[:-1] + "+00:00"
+
+    try:
+        dt = datetime.fromisoformat(cleaned)
+    except Exception as exc:
+        raise ValueError(f"Malformed ISO 8601 timestamp '{value}': {exc}") from exc
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt
+
+
 def _check_common_precedence(state: EngineeringState) -> str | None:
     """Evaluate Priority 1, 2, and 3 routing precedence common to all agent routers.
 
-    P1: Deadline check (workflow_status == "deadline_exceeded" -> deadline_enforcer)
+    P1: Deadline check (workflow_status == "deadline_exceeded" OR now_utc > pipeline_deadline_at -> deadline_enforcer)
     P2: Global debug cycle cap (total_debug_cycles >= max_debug_cycles -> global_cap_handler)
     P3: Human approval hold (human_approval_required is True -> human_approval)
 
     Returns target node name if a high-precedence condition matches, else None to signal P4 fallback.
     """
-    if state.get("workflow_status") == STATUS_DEADLINE_EXCEEDED:
+    deadline = state.get("pipeline_deadline_at")
+    deadline_exceeded = False
+    if deadline is not None:
+        deadline_dt = parse_iso_utc(deadline)
+        if datetime.now(timezone.utc) > deadline_dt:
+            deadline_exceeded = True
+
+    if state.get("workflow_status") == STATUS_DEADLINE_EXCEEDED or deadline_exceeded:
         return NODE_DEADLINE_ENFORCER
 
     total_debug_cycles = state.get("total_debug_cycles", 0)
@@ -283,6 +317,7 @@ def router_after_human_approval(state: EngineeringState) -> str:
 
 
 __all__ = [
+    "parse_iso_utc",
     "router_after_product_manager",
     "router_after_architect",
     "router_after_task_planner",

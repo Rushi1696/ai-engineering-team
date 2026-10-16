@@ -256,6 +256,75 @@ def test_precedence_p1_deadline_exceeded(router_fn):
 
 
 @pytest.mark.parametrize("router_fn", ALL_ROUTER_FUNCTIONS)
+@pytest.mark.parametrize(
+    "expired_deadline",
+    [
+        "2020-01-01T00:00:00Z",
+        "2020-01-01T00:00:00+00:00",
+        "2020-01-01T00:00:00",  # timezone-naive, treated as UTC
+    ],
+)
+def test_precedence_p1_expired_deadline_all_routers(router_fn, expired_deadline):
+    """P1: expired pipeline_deadline_at routes to deadline_enforcer for all 11 routers."""
+    state = {
+        "workflow_status": STATUS_REQUIREMENTS_COMPLETE,
+        "pipeline_deadline_at": expired_deadline,
+        "next_agent": "ProductManagerAgent",
+    }
+    assert router_fn(state) == NODE_DEADLINE_ENFORCER
+
+
+@pytest.mark.parametrize(
+    "future_or_none_deadline",
+    [
+        "2099-01-01T00:00:00Z",
+        "2099-01-01T00:00:00+00:00",
+        "2099-01-01T00:00:00",
+        None,
+    ],
+)
+def test_deadline_future_and_none_normal_routing(future_or_none_deadline):
+    """Future deadline and None allow normal forward routing to proceed."""
+    state_pm = {
+        "workflow_status": STATUS_REQUIREMENTS_COMPLETE,
+        "pipeline_deadline_at": future_or_none_deadline,
+    }
+    assert router_after_product_manager(state_pm) == NODE_ARCHITECT
+
+    state_arch = {
+        "workflow_status": STATUS_ARCHITECTURE_COMPLETE,
+        "pipeline_deadline_at": future_or_none_deadline,
+    }
+    assert router_after_architect(state_arch) == NODE_TASK_PLANNER
+
+
+@pytest.mark.parametrize("router_fn", ALL_ROUTER_FUNCTIONS)
+def test_deadline_malformed_raises_value_error(router_fn):
+    """Malformed pipeline_deadline_at raises ValueError."""
+    state = {
+        "workflow_status": STATUS_REQUIREMENTS_COMPLETE,
+        "pipeline_deadline_at": "not-an-iso-8601-timestamp",
+        "next_agent": "ProductManagerAgent",
+    }
+    with pytest.raises(ValueError, match="Malformed ISO 8601 timestamp"):
+        router_fn(state)
+
+
+@pytest.mark.parametrize("router_fn", ALL_ROUTER_FUNCTIONS)
+def test_precedence_p1_expired_deadline_outranks_p2_and_p3(router_fn):
+    """P1 (expired deadline) outranks P2 (global debug cap) and P3 (human approval)."""
+    state = {
+        "workflow_status": STATUS_REQUIREMENTS_COMPLETE,
+        "pipeline_deadline_at": "2020-01-01T00:00:00Z",
+        "total_debug_cycles": 99,
+        "max_debug_cycles": 10,
+        "human_approval_required": True,
+        "next_agent": "ProductManagerAgent",
+    }
+    assert router_fn(state) == NODE_DEADLINE_ENFORCER
+
+
+@pytest.mark.parametrize("router_fn", ALL_ROUTER_FUNCTIONS)
 def test_precedence_p2_global_debug_cap(router_fn):
     """P2: global debug cap reached routes to NODE_GLOBAL_CAP_HANDLER regardless of human_approval_required."""
     state = {

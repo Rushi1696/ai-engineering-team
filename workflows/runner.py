@@ -10,6 +10,7 @@ Source of truth:
     streaming API and prompts operator; test fixtures inject pre-configured approval_decision).
 """
 
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional
 import uuid
 
@@ -21,6 +22,7 @@ from workflows.constants import (
     APPROVAL_DECISION_REJECTED,
 )
 from workflows.graph import build_graph
+from workflows.routers import parse_iso_utc
 
 
 def cli_prompt_approval(interrupt_payload: Dict[str, Any]) -> Dict[str, str]:
@@ -92,6 +94,14 @@ def run_pipeline(
     Returns:
         The final EngineeringState dictionary.
     """
+    # Validate deadline before state creation
+    if pipeline_deadline_at is not None:
+        deadline_dt = parse_iso_utc(pipeline_deadline_at)
+        if deadline_dt <= datetime.now(timezone.utc):
+            raise ValueError(
+                f"pipeline_deadline_at '{pipeline_deadline_at}' is already in the past."
+            )
+
     # (a) Build initial state
     initial_state = create_initial_state(
         project_name=project_name,

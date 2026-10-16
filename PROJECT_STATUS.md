@@ -163,10 +163,10 @@ LangGraph graph topology, routing, interrupt handling, and execution orchestrati
 - `workflows/graph.py` — `build_graph()` constructing the StateGraph topology with 11 agent nodes, 3 synthetic nodes (`human_approval`, `deadline_enforcer`, `global_cap_handler`), and conditional routing edges.
 - `workflows/runner.py` — Pipeline runner invoking the compiled graph, initializing default configurations, and capturing final results.
 
-**Status: Complete and tested** — 77 workflow tests across `tests/workflows/` (routers, interrupts, graph structural & execution, runner). Full test suite: **262 tests passed** (0 failures, 2 warnings).
+**Status: Complete and tested** — 139 workflow tests across `tests/workflows/` (routers, interrupts, graph structural & execution, runner). Full test suite: **325 tests passed** (0 failures, 2 warnings).
 
 > **Known notes:**
-> - (a) `deadline_exceeded` is never set by `BaseAgent`, so deadline enforcement is dormant until decided.
+> - (a) Deadline is enforced in router P1 (pipeline-level, checked after each node); per-node timeouts remain a TODO (§3.9).
 > - (b) `runner` has no resume-after-restart and uses `MemorySaver`.
 
 ---

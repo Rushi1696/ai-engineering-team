@@ -286,6 +286,55 @@ def test_graph_deadline_exceeded_routes_to_deadline_enforcer():
     assert any(err.error_type == "timeout" for err in final_state["errors"])
 
 
+def test_graph_expired_pipeline_deadline_diverts_after_first_node_to_deadline_enforcer():
+    """A run with an expired pipeline_deadline_at diverts after the first node to deadline_enforcer,
+    ends failed, with an ErrorRecord of error_type 'timeout'.
+    Built directly with create_initial_state + build_graph.
+    """
+    execution_order = []
+
+    def stub(node_name: str, update_dict: dict):
+        def fn(state: EngineeringState):
+            execution_order.append(node_name)
+            return update_dict
+        return fn
+
+    agents = {
+        NODE_PRODUCT_MANAGER: stub(
+            NODE_PRODUCT_MANAGER,
+            {"workflow_status": STATUS_REQUIREMENTS_COMPLETE, "current_agent": "ProductManagerAgent"},
+        ),
+        NODE_ARCHITECT: stub(NODE_ARCHITECT, {"workflow_status": STATUS_ARCHITECTURE_COMPLETE}),
+        NODE_TASK_PLANNER: stub(NODE_TASK_PLANNER, {"workflow_status": STATUS_PLANNING_COMPLETE}),
+        NODE_BACKEND: stub(NODE_BACKEND, {}),
+        NODE_FRONTEND: stub(NODE_FRONTEND, {}),
+        NODE_QA: stub(NODE_QA, {}),
+        NODE_DEBUG: stub(NODE_DEBUG, {}),
+        NODE_REVIEWER: stub(NODE_REVIEWER, {}),
+        NODE_DEVOPS: stub(NODE_DEVOPS, {}),
+        NODE_DOCUMENTATION: stub(NODE_DOCUMENTATION, {}),
+        NODE_FINAL_PROJECT: stub(NODE_FINAL_PROJECT, {}),
+    }
+
+    graph = build_graph(agents, checkpointer=MemorySaver())
+    initial_state = create_initial_state(
+        project_name="ExpiredDeadlineApp",
+        user_input="Build expired deadline app",
+        pipeline_deadline_at="2020-01-01T00:00:00Z",
+    )
+    config = {"configurable": {"thread_id": "thread_expired_deadline"}}
+
+    final_state = graph.invoke(initial_state, config=config)
+
+    # First node executes, but router after ProductManagerAgent diverts to deadline_enforcer -> END
+    assert execution_order == [NODE_PRODUCT_MANAGER]
+    assert final_state["workflow_status"] == STATUS_FAILED
+    timeout_errors = [err for err in final_state["errors"] if err.error_type == "timeout"]
+    assert len(timeout_errors) == 1
+    assert timeout_errors[0].agent == "ProductManagerAgent"
+
+
+
 def test_graph_human_approval_interrupt_and_resume_approved_and_rejected():
     """Requirement (f): Real human_approval interrupt, resumed with Command(resume=...)
     for both 'approved' (resumes at the right node) and 'rejected' (ends failed).
