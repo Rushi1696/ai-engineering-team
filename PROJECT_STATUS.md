@@ -168,6 +168,7 @@ LangGraph graph topology, routing, interrupt handling, and execution orchestrati
 > **Known notes:**
 > - (a) Deadline is enforced in router P1 (pipeline-level, checked after each node); per-node timeouts remain a TODO (§3.9).
 > - (b) `runner` has no resume-after-restart and uses `MemorySaver`.
+> - (c) `parse_iso_utc` currently lives in `workflows/routers.py`; to relocate to a shared utility module.
 
 ---
 

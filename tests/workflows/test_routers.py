@@ -244,9 +244,10 @@ def test_router_after_reviewer_mismatched_status_raises_error():
 
 @pytest.mark.parametrize("router_fn", ALL_ROUTER_FUNCTIONS)
 def test_precedence_p1_deadline_exceeded(router_fn):
-    """P1: deadline_exceeded takes top priority over all other fields."""
+    """P1: deadline_exceeded takes top priority over all other fields, even with malformed pipeline_deadline_at."""
     state = {
         "workflow_status": "deadline_exceeded",
+        "pipeline_deadline_at": "malformed-deadline-string",
         "total_debug_cycles": 99,
         "max_debug_cycles": 10,
         "human_approval_required": True,

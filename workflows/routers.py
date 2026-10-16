@@ -84,15 +84,14 @@ def _check_common_precedence(state: EngineeringState) -> str | None:
 
     Returns target node name if a high-precedence condition matches, else None to signal P4 fallback.
     """
+    if state.get("workflow_status") == STATUS_DEADLINE_EXCEEDED:
+        return NODE_DEADLINE_ENFORCER
+
     deadline = state.get("pipeline_deadline_at")
-    deadline_exceeded = False
     if deadline is not None:
         deadline_dt = parse_iso_utc(deadline)
         if datetime.now(timezone.utc) > deadline_dt:
-            deadline_exceeded = True
-
-    if state.get("workflow_status") == STATUS_DEADLINE_EXCEEDED or deadline_exceeded:
-        return NODE_DEADLINE_ENFORCER
+            return NODE_DEADLINE_ENFORCER
 
     total_debug_cycles = state.get("total_debug_cycles", 0)
     max_debug_cycles = state.get("max_debug_cycles", 10)
