@@ -262,3 +262,188 @@ def test_pm_invoke_lifecycle_exhaustion():
     assert update["execution_metadata"]["ProductManagerAgent"].status == "failed"
     assert update["total_invocations"] == 1
     assert "workflow_status" not in update
+
+
+def test_pm_retry_limit_below_three_single_attempt():
+    """When effective_max is 1, a single failure immediately exhausts without sleeping."""
+    client = FakeLLMClient(responses=[RuntimeError("API down")])
+    sleep_calls = []
+
+    agent = ProductManagerAgent(
+        model_name="test-model",
+        llm_client=client,
+        max_retries=1,
+        sleep_fn=lambda s: sleep_calls.append(s),
+    )
+
+    state = create_initial_state(project_name="LimitApp", user_input="Build app")
+    result = agent.execute(state)
+
+    assert len(client.calls) == 1
+    assert len(sleep_calls) == 0
+    assert result["human_approval_required"] is True
+    assert result["retry_counts"]["ProductManagerAgent"] == 1
+    assert result["execution_metadata"]["ProductManagerAgent"].status == "failed"
+
+
+def test_pm_retry_limit_below_three_two_attempts_via_state():
+    """When state['max_retries'] specifies 2, exactly 2 attempts execute with 1 backoff sleep."""
+    client = FakeLLMClient(
+        responses=[
+            RuntimeError("Transient error"),
+            RuntimeError("Persistent error"),
+        ]
+    )
+    sleep_calls = []
+
+    agent = ProductManagerAgent(
+        model_name="test-model",
+        llm_client=client,
+        max_retries=3,  # constructor default overridden by state
+        sleep_fn=lambda s: sleep_calls.append(s),
+    )
+
+    state = create_initial_state(project_name="LimitApp", user_input="Build app")
+    state["max_retries"] = {"ProductManagerAgent": 2}
+
+    result = agent.execute(state)
+
+    assert len(client.calls) == 2
+    assert sleep_calls == [2.0]
+    assert result["human_approval_required"] is True
+    assert result["retry_counts"]["ProductManagerAgent"] == 2
+
+
+def test_pm_retry_limit_above_three_exponential_backoff():
+    """When effective_max is 4, 4 attempts execute with backoff [2.0, 4.0, 8.0] without IndexError."""
+    client = FakeLLMClient(
+        responses=[
+            RuntimeError("Error 1"),
+            RuntimeError("Error 2"),
+            RuntimeError("Error 3"),
+            RuntimeError("Error 4"),
+        ]
+    )
+    sleep_calls = []
+
+    agent = ProductManagerAgent(
+        model_name="test-model",
+        llm_client=client,
+        max_retries=4,
+        sleep_fn=lambda s: sleep_calls.append(s),
+    )
+
+    state = create_initial_state(project_name="LimitApp", user_input="Build app")
+    result = agent.execute(state)
+
+    assert len(client.calls) == 4
+    assert sleep_calls == [2.0, 4.0, 8.0]
+    assert result["human_approval_required"] is True
+    assert result["retry_counts"]["ProductManagerAgent"] == 4
+
+
+def test_pm_preserves_other_agents_retry_counts_on_success():
+    """Successful execution resets ProductManagerAgent to 0 while preserving other agents' retry counts."""
+    client = FakeLLMClient(responses=[_sample_valid_requirements_dict()])
+    agent = ProductManagerAgent(model_name="test-model", llm_client=client)
+
+    state = create_initial_state(project_name="OrderApp", user_input="Build app")
+    state["retry_counts"] = {"ArchitectAgent": 2, "ReviewerAgent": 1}
+
+    result = agent.execute(state)
+
+    assert result["retry_counts"] == {
+        "ArchitectAgent": 2,
+        "ReviewerAgent": 1,
+        "ProductManagerAgent": 0,
+    }
+
+
+def test_pm_preserves_other_agents_retry_counts_on_exhaustion():
+    """Exhaustion update stamps effective_max for ProductManagerAgent while preserving other agents."""
+    client = FakeLLMClient(
+        responses=[
+            ValueError("Bad JSON 1"),
+            ValueError("Bad JSON 2"),
+            ValueError("Bad JSON 3"),
+        ]
+    )
+    agent = ProductManagerAgent(
+        model_name="test-model",
+        llm_client=client,
+        sleep_fn=lambda s: None,
+    )
+
+    state = create_initial_state(project_name="OrderApp", user_input="Build app")
+    state["retry_counts"] = {"ArchitectAgent": 2, "ReviewerAgent": 1}
+
+    result = agent.execute(state)
+
+    assert result["retry_counts"] == {
+        "ArchitectAgent": 2,
+        "ReviewerAgent": 1,
+        "ProductManagerAgent": 3,
+    }
+
+
+def test_pm_resumed_run_with_existing_partial_retries():
+    """When resuming with start_retry_count=2 and max_retries=3, only 1 remaining attempt executes."""
+    client = FakeLLMClient(responses=[RuntimeError("Immediate final failure")])
+    sleep_calls = []
+
+    agent = ProductManagerAgent(
+        model_name="test-model",
+        llm_client=client,
+        max_retries=3,
+        sleep_fn=lambda s: sleep_calls.append(s),
+    )
+
+    state = create_initial_state(project_name="ResumeApp", user_input="Build app")
+    state["retry_counts"] = {"ProductManagerAgent": 2}
+
+    result = agent.execute(state)
+
+    assert len(client.calls) == 1
+    assert len(sleep_calls) == 0
+    assert result["human_approval_required"] is True
+    assert result["retry_counts"]["ProductManagerAgent"] == 3
+
+
+def test_pm_resumed_run_success_resets_retry_count_to_zero():
+    """When resuming with start_retry_count=2, success on the final attempt resets count to 0."""
+    client = FakeLLMClient(responses=[_sample_valid_requirements_dict()])
+    agent = ProductManagerAgent(model_name="test-model", llm_client=client)
+
+    state = create_initial_state(project_name="ResumeApp", user_input="Build app")
+    state["retry_counts"] = {"ProductManagerAgent": 2}
+
+    result = agent.execute(state)
+
+    assert len(client.calls) == 1
+    assert result["workflow_status"] == STATUS_REQUIREMENTS_COMPLETE
+    assert result["retry_counts"]["ProductManagerAgent"] == 0
+
+
+def test_pm_immediate_exhaustion_when_retry_limit_already_reached():
+    """When start_retry_count >= effective_max, no LLM calls occur and exhaustion is returned immediately."""
+    client = FakeLLMClient(responses=[])
+    sleep_calls = []
+
+    agent = ProductManagerAgent(
+        model_name="test-model",
+        llm_client=client,
+        max_retries=3,
+        sleep_fn=lambda s: sleep_calls.append(s),
+    )
+
+    state = create_initial_state(project_name="ExhaustedApp", user_input="Build app")
+    state["retry_counts"] = {"ProductManagerAgent": 3}
+
+    result = agent.execute(state)
+
+    assert len(client.calls) == 0
+    assert len(sleep_calls) == 0
+    assert result["human_approval_required"] is True
+    assert result["retry_counts"]["ProductManagerAgent"] == 3
+    assert result["execution_metadata"]["ProductManagerAgent"].status == "failed"
+

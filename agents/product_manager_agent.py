@@ -113,13 +113,13 @@ class ProductManagerAgent(BaseAgent):
                 )
 
     def execute(self, state: EngineeringState) -> Dict[str, Any]:
-        """Execute requirements generation with internal 3-attempt retry loop.
+        """Execute requirements generation with internal retry loop.
 
         Per design.md Section 1.1 & workflow-design-revised.md Section 3.10:
           - Validates user_input: if empty or whitespace-only, immediately returns an exhaustion
             update with human_approval_required=True without LLM calls or backoff.
-          - Runs up to 3 attempts with prompt refinement on validation failure and exponential
-            backoff (2s, 4s, 8s) on unhandled exceptions.
+          - Runs attempts up to effective_max with prompt refinement on validation failure and
+            exponential backoff (2s, 4s, 8s, ...) on unhandled exceptions.
           - On success, returns ProductRequirements, increments forward_stage idempotently
             (Req 21 crit 6), resets retry_counts to 0 (Req 13 crit 7), and sets
             workflow_status='requirements_complete', next_agent='ArchitectAgent'.
@@ -136,6 +136,9 @@ class ProductManagerAgent(BaseAgent):
         existing_max_retries = state.get("max_retries") or {}
         effective_max = existing_max_retries.get(self.agent_name, self.max_retries)
 
+        existing_retry_counts = state.get("retry_counts") or {}
+        start_retry_count = existing_retry_counts.get(self.agent_name, 0)
+
         # 1. Fast fail on empty or whitespace user_input (no LLM call, no backoff)
         if not user_input or not isinstance(user_input, str) or not user_input.strip():
             return self._build_exhaustion_return(
@@ -143,23 +146,35 @@ class ProductManagerAgent(BaseAgent):
                 started_at=started_at,
                 reason="user_input is empty or whitespace-only",
                 effective_max=effective_max,
-                retry_count=effective_max,
+                retry_count=max(start_retry_count, effective_max),
             )
+
+        # 2. Fast fail if retry limit already reached prior to execution
+        if start_retry_count >= effective_max:
+            return self._build_exhaustion_return(
+                state=state,
+                started_at=started_at,
+                reason=(
+                    f"Retry limit already reached ({start_retry_count}/{effective_max}) "
+                    f"for {self.agent_name} before execution."
+                ),
+                effective_max=effective_max,
+                retry_count=start_retry_count,
+            )
+
+        max_attempts = effective_max - start_retry_count
 
         # Load prompt templates
         system_prompt = self._load_prompt("system_prompt.md")
         user_template = self._load_prompt("user_prompt_template.md")
         revision_template = self._load_prompt("revision_prompt.md")
 
-        backoff_delays = [2.0, 4.0, 8.0]
         last_error: Optional[Exception] = None
         last_error_type: str = "unhandled_exception"
+        current_retry_count = start_retry_count
 
-        existing_retry_counts = state.get("retry_counts") or {}
-        current_retry_count = existing_retry_counts.get(self.agent_name, 0)
-
-        # 2. Internal 3-attempt loop
-        for attempt in range(1, 4):
+        # 3. Internal retry loop bounded by remaining attempts
+        for attempt in range(1, max_attempts + 1):
             current_retry_count += 1
             if attempt == 1:
                 prompt = user_template.format(
@@ -190,25 +205,28 @@ class ProductManagerAgent(BaseAgent):
                     "validation_failure" if is_validation else "unhandled_exception"
                 )
 
-                if attempt < 3:
+                if attempt < max_attempts:
                     if not is_validation:
-                        delay = backoff_delays[attempt - 1]
+                        delay = 2.0 * (2 ** (attempt - 1))
                         self.sleep_fn(delay)
                     continue
                 break
             else:
-                # 3. Success
+                # 4. Success
                 return self._build_success_return(
                     state=state,
                     started_at=started_at,
                     requirements=requirements_obj,
                 )
 
-        # 4. Exhaustion return after 3 failed attempts
+        # 5. Exhaustion return after max_attempts failed attempts
         return self._build_exhaustion_return(
             state=state,
             started_at=started_at,
-            reason=f"Exhausted 3 attempts without valid requirements. Last error ({last_error_type}): {last_error}",
+            reason=(
+                f"Exhausted {max_attempts} attempts without valid requirements. "
+                f"Last error ({last_error_type}): {last_error}"
+            ),
             effective_max=effective_max,
             retry_count=max(current_retry_count, effective_max),
         )
@@ -245,13 +263,16 @@ class ProductManagerAgent(BaseAgent):
             f"for project '{project_name}'."
         )
 
+        updated_retry_counts = dict(state.get("retry_counts") or {})
+        updated_retry_counts[self.agent_name] = 0
+
         return {
             "requirements": requirements,
             "workflow_status": STATUS_REQUIREMENTS_COMPLETE,
             "next_agent": "ArchitectAgent",
             "current_agent": self.agent_name,
             "forward_stage": new_forward_stage,
-            "retry_counts": {self.agent_name: 0},  # Reset to 0 on success (Req 13 crit 7)
+            "retry_counts": updated_retry_counts,  # Reset to 0 on success (Req 13 crit 7)
             "checkpoint_stage": "requirements_complete",
             "checkpoints": {"requirements_complete": completed_at},
             "agent_scratchpad": {self.agent_name: scratchpad_entry},
@@ -305,11 +326,14 @@ class ProductManagerAgent(BaseAgent):
             f"Reason: {reason}. Human approval is required to continue."
         )
 
+        updated_retry_counts = dict(state.get("retry_counts") or {})
+        updated_retry_counts[self.agent_name] = retry_count
+
         return {
             "current_agent": self.agent_name,
             "next_agent": self.agent_name,
             "errors": [error_record],
-            "retry_counts": {self.agent_name: retry_count},
+            "retry_counts": updated_retry_counts,
             "human_approval_required": True,
             "human_approval_notes": approval_notes,
             "execution_metadata": {self.agent_name: failed_metadata},
