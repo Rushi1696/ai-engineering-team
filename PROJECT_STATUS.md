@@ -53,7 +53,7 @@ User
 | EngineeringState Foundation (`state/`) | ✅ Complete and tested |
 | BaseAgent (`agents/base_agent.py`) | ✅ Complete and tested |
 | Graph Skeleton (`workflows/`) | ✅ Complete and tested |
-| ProductManagerAgent | ⬜ Not started |
+| ProductManagerAgent (`agents/product_manager_agent.py`) | ✅ Complete and tested |
 | ArchitectAgent | ⬜ Not started |
 | TaskPlannerAgent | ⬜ Not started |
 | BackendAgent | ⬜ Not started |
@@ -170,11 +170,21 @@ LangGraph graph topology, routing, interrupt handling, and execution orchestrati
 > - (b) `runner` has no resume-after-restart and uses `MemorySaver`.
 > - (c) `parse_iso_utc` currently lives in `workflows/routers.py`; to relocate to a shared utility module.
 
+### ProductManagerAgent (`agents/product_manager_agent.py`)
+
+First concrete pipeline agent, converting natural language user requirements into structured `ProductRequirements` artifact, per `design.md` Section 1.1 and Section 6.1.
+
+- `agents/product_manager_agent.py` — Inherits from `BaseAgent`; features internal 3-attempt loop for validation recovery and exponential backoff; exhaustion return sets `human_approval_required=True` while keeping `workflow_status` unchanged; idempotent `forward_stage` increments (Req 21 crit 6); `requirements.version` incrementing (Req 3 crit 3); reset of `retry_counts` to 0 on success (Req 13 crit 7).
+- `tools/shared/llm_client.py` — Protocol `LLMClient` and configurable test double `FakeLLMClient`.
+- `prompts/product_manager/` — Markdown prompt templates (`system_prompt.md`, `user_prompt_template.md`, `revision_prompt.md`) with automated metadata header stripping.
+
+**Status: Complete and tested** — Full test suite: **345 tests passed** (0 failures, 2 warnings).
+
 ---
 
 ## Next Phase
 
-**ProductManagerAgent** (`agents/product_manager/`) — The first concrete pipeline agent, converting natural language user requirements into structured `ProductRequirements` artifact, per `design.md` Section 1.1 and Section 6.1.
+**ArchitectAgent** (`agents/architect_agent.py`) — The second concrete pipeline agent, translating `ProductRequirements` into structured `SystemArchitecture` artifact, per `design.md` Section 1.2 and Section 6.1.
 
 ---
 

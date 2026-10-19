@@ -94,7 +94,10 @@ def run_pipeline(
     Returns:
         The final EngineeringState dictionary.
     """
-    # Validate deadline before state creation
+    # Validate user_input and deadline before state creation
+    if not user_input or not isinstance(user_input, str) or not user_input.strip():
+        raise ValueError("user_input must not be empty or whitespace-only.")
+
     if pipeline_deadline_at is not None:
         deadline_dt = parse_iso_utc(pipeline_deadline_at)
         if deadline_dt <= datetime.now(timezone.utc):

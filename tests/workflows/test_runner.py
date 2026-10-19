@@ -231,3 +231,16 @@ def test_run_pipeline_accepts_valid_future_deadline():
     )
     assert final_state["workflow_status"] == STATUS_COMPLETED
 
+
+@pytest.mark.parametrize("empty_input", ["", "   ", "\t\n  "])
+def test_run_pipeline_rejects_empty_user_input(empty_input):
+    """run_pipeline raises ValueError if user_input is empty or whitespace-only before creating state."""
+    agents = _build_happy_agents()
+    with pytest.raises(ValueError, match="user_input must not be empty or whitespace-only"):
+        run_pipeline(
+            project_name="EmptyInputApp",
+            user_input=empty_input,
+            agents=agents,
+        )
+
+
