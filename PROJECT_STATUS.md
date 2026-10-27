@@ -54,10 +54,10 @@ User
 | BaseAgent (`agents/base_agent.py`) | ✅ Complete and tested |
 | Graph Skeleton (`workflows/`) | ✅ Complete and tested |
 | ProductManagerAgent (`agents/product_manager_agent.py`) | ✅ Complete and tested |
-| ArchitectAgent | ⬜ Not started |
-| TaskPlannerAgent | ⬜ Not started |
-| BackendAgent | ⬜ Not started |
-| FrontendAgent | ⬜ Not started |
+| ArchitectAgent (`agents/architect_agent.py`) | ✅ Complete and tested |
+| TaskPlannerAgent (`agents/task_planner_agent.py`) | ✅ Complete and tested |
+| BackendAgent (`agents/backend_agent.py`) | ✅ Complete and tested |
+| FrontendAgent (`agents/frontend_agent.py`) | ✅ Complete and tested |
 | QAAgent | ⬜ Not started |
 | DebugAgent | ⬜ Not started |
 | ReviewerAgent | ⬜ Not started |
@@ -178,13 +178,53 @@ First concrete pipeline agent, converting natural language user requirements int
 - `tools/shared/llm_client.py` — Protocol `LLMClient` and configurable test double `FakeLLMClient`.
 - `prompts/product_manager/` — Markdown prompt templates (`system_prompt.md`, `user_prompt_template.md`, `revision_prompt.md`) with automated metadata header stripping.
 
-**Status: Complete and tested** — Full test suite: **345 tests passed** (0 failures, 2 warnings).
+**Status: Complete and tested** — Full test suite: **353 tests passed** (0 failures, 2 warnings).
+
+### ArchitectAgent (`agents/architect_agent.py`)
+
+Second concrete pipeline agent, translating `ProductRequirements` into structured `SystemArchitecture` artifact, per `design.md` Section 1.2 and Section 6.1.
+
+- `agents/architect_agent.py` — Inherits from `BaseAgent`; features internal retry loop for validation recovery and exponential backoff; exhaustion return sets `human_approval_required=True` while keeping `workflow_status` unchanged; fast-fails on missing or empty requirements; idempotent `forward_stage` advance to 2 (Req 21 crit 6); `architecture.version` incrementing (Req 4 crit 3); reset of `retry_counts` to 0 on success (Req 13 crit 7); preservation of other agents' retry counts.
+- `prompts/architect/` — Markdown prompt templates (`system_prompt.md`, `user_prompt_template.md`, `revision_prompt.md`) with automated metadata header stripping.
+- `tests/agents/test_architect_agent.py` & `tests/workflows/test_graph_architect.py` — 18 tests covering valid generation, invalid output, missing input, internal retry recovery, retry exhaustion, and graph integration.
+
+**Status: Complete and tested** — Full test suite: **371 tests passed** (0 failures, 2 warnings).
+
+### TaskPlannerAgent (`agents/task_planner_agent.py`)
+
+Third concrete pipeline agent, decomposing `SystemArchitecture` and `ProductRequirements` into an ordered, dependency-resolved `TaskPlan` of atomic `ImplementationTask` entries, per `design.md` Section 1.3 and Section 6.1.
+
+- `agents/task_planner_agent.py` — Inherits from `BaseAgent`; features internal retry loop for validation recovery and exponential backoff; exhaustion return sets `human_approval_required=True` while keeping `workflow_status` unchanged; fast-fails on missing or empty requirements/architecture; idempotent `forward_stage` advance to 3 (Req 21 crit 6); `task_plan.version` incrementing (Req 5 crit 4); reset of `retry_counts` to 0 on success (Req 13 crit 7); topological validation of `execution_order` and dependencies; preservation of other agents' retry counts.
+- `prompts/task_planner/` — Markdown prompt templates (`system_prompt.md`, `user_prompt_template.md`, `revision_prompt.md`) with automated metadata header stripping.
+- `tests/agents/test_task_planner_agent.py` & `tests/workflows/test_graph_task_planner.py` — 26 tests covering constructor validation, valid plan generation, versioning, forward stage idempotency, missing/invalid input fast-fails, retry recovery, retry exhaustion, custom retry ceilings, and graph execution routing.
+
+**Status: Complete and tested** — Full test suite: **398 tests passed** (0 failures, 2 warnings).
+
+### BackendAgent (`agents/backend_agent.py`)
+
+Fourth concrete pipeline agent, implementing backend `ImplementationTask` entries from `task_plan` by generating server-side code artifacts and writing them into `code_artifacts`, per `design.md` Section 1.4 and Section 6.1.
+
+- `agents/backend_agent.py` — Inherits from `BaseAgent`; features internal retry loop for validation recovery and exponential backoff; exhaustion return sets `human_approval_required=True` while keeping `workflow_status` unchanged; fast-fails on missing or empty requirements/architecture/task_plan; filters assigned backend tasks respecting `task_plan.execution_order`; validates task dependencies; generates structured `CodeArtifact` entries with per-file versioning (Req 6 crit 3); updates backend tasks to `"completed"` in `task_plan`; idempotent `forward_stage` advance to 4 (Req 21 crit 6); reset of `retry_counts` to 0 on success (Req 13 crit 7); preservation of other agents' retry counts.
+- `prompts/backend/` — Markdown prompt templates (`system_prompt.md`, `user_prompt_template.md`, `revision_prompt.md`) with automated metadata header stripping.
+- `tests/agents/test_backend_agent.py` & `tests/workflows/test_graph_backend.py` — 23 tests covering constructor validation, valid artifact generation, versioning, task filtering, no-op skipping, dependency validation, fast-fails on invalid/missing inputs, retry recovery, retry exhaustion, custom retry ceilings, and graph execution routing.
+
+**Status: Complete and tested** — Full test suite: **421 tests passed** (0 failures, 2 warnings).
+
+### FrontendAgent (`agents/frontend_agent.py`)
+
+Fifth concrete pipeline agent, implementing frontend `ImplementationTask` entries from `task_plan` by generating client-side components and styles as `CodeArtifact` entries (`artifact_type == "frontend"`), per `design.md` Section 1.5 and Section 6.1.
+
+- `agents/frontend_agent.py` — Inherits from `BaseAgent`; features internal retry loop for validation recovery and exponential backoff; exhaustion return sets `human_approval_required=True` while keeping `workflow_status` unchanged; fast-fails on missing or empty requirements/architecture/task_plan; filters assigned frontend tasks respecting `task_plan.execution_order`; validates task dependencies; generates structured `CodeArtifact` entries with per-file versioning (Req 6 crit 4); updates frontend tasks to `"completed"` in `task_plan`; advances `forward_stage` to 5 idempotently (Req 21 crit 6); reset of `retry_counts` to 0 on success (Req 13 crit 7); preserves existing backend artifacts and other agents' retry counts.
+- `prompts/frontend/` — Markdown prompt templates (`system_prompt.md`, `user_prompt_template.md`, `revision_prompt.md`) with automated metadata header stripping.
+- `tests/agents/test_frontend_agent.py` & `tests/workflows/test_graph_frontend.py` — 23 tests covering constructor validation, valid artifact generation, versioning, task filtering, no-op skipping, dependency validation, fast-fails on invalid/missing inputs, retry recovery, retry exhaustion, custom retry ceilings, and graph execution routing.
+
+**Status: Complete and tested** — Full test suite: **444 tests passed** (0 failures, 2 warnings).
 
 ---
 
 ## Next Phase
 
-**ArchitectAgent** (`agents/architect_agent.py`) — The second concrete pipeline agent, translating `ProductRequirements` into structured `SystemArchitecture` artifact, per `design.md` Section 1.2 and Section 6.1.
+**QAAgent** (`agents/qa_agent.py`) — The sixth concrete pipeline agent, generating test plans and automated tests based on requirements, architecture, and code artifacts, per `design.md` Section 1.6 and Section 6.1.
 
 ---
 
