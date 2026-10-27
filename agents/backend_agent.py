@@ -26,8 +26,7 @@ import uuid
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
-from agents.base_agent import DEFAULT_MAX_RETRIES, BaseAgent
-from agents.product_manager_agent import strip_metadata_header
+from agents.base_agent import DEFAULT_MAX_RETRIES, BaseAgent, strip_metadata_header
 from state.engineering_state import EngineeringState
 from state.models import (
     AgentExecutionMetadata,
@@ -39,7 +38,8 @@ from state.models import (
     TaskPlan,
 )
 from tools.shared.llm_client import LLMClient
-from workflows.constants import STATUS_BACKEND_COMPLETE
+
+STATUS_BACKEND_COMPLETE = "backend_complete"
 
 _DEFAULT_PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts" / "backend"
 _VALID_ARTIFACT_TYPES: Set[str] = {

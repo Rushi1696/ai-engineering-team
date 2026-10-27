@@ -62,6 +62,7 @@ Design notes:
 
 from __future__ import annotations
 
+import re
 import traceback as traceback_module
 import uuid
 from abc import ABC, abstractmethod
@@ -77,6 +78,16 @@ from state.models import AgentExecutionMetadata, ErrorRecord
 # ---------------------------------------------------------------------------
 
 DEFAULT_MAX_RETRIES: int = 3
+
+
+def strip_metadata_header(text: str) -> str:
+    """Strip YAML frontmatter (--- ... ---) or HTML comment (<!-- ... -->) header block.
+
+    Ensures prompt version and author metadata never reach the LLM inference call.
+    """
+    cleaned = re.sub(r"^<!--[\s\S]*?-->\s*", "", text)
+    cleaned = re.sub(r"^---[\s\S]*?---\s*", "", cleaned)
+    return cleaned.strip()
 
 
 def _now_iso() -> str:

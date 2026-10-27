@@ -24,8 +24,7 @@ import time
 from typing import Any, Callable, Dict, Optional, Set, Union
 import uuid
 
-from agents.base_agent import DEFAULT_MAX_RETRIES, BaseAgent
-from agents.product_manager_agent import strip_metadata_header
+from agents.base_agent import DEFAULT_MAX_RETRIES, BaseAgent, strip_metadata_header
 from state.engineering_state import EngineeringState
 from state.models import (
     AgentExecutionMetadata,
@@ -36,7 +35,8 @@ from state.models import (
     TaskPlan,
 )
 from tools.shared.llm_client import LLMClient
-from workflows.constants import STATUS_PLANNING_COMPLETE
+
+STATUS_PLANNING_COMPLETE = "planning_complete"
 
 _DEFAULT_PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts" / "task_planner"
 _VALID_ASSIGNED_AGENTS: Set[str] = {"BackendAgent", "FrontendAgent", "QAAgent"}

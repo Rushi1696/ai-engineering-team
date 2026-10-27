@@ -29,7 +29,7 @@ from agents.base_agent import DEFAULT_MAX_RETRIES, BaseAgent
 from state.engineering_state import EngineeringState
 from state.models import AgentExecutionMetadata, ErrorRecord, ProductRequirements
 from tools.shared.llm_client import LLMClient
-from workflows.constants import STATUS_REQUIREMENTS_COMPLETE
+STATUS_REQUIREMENTS_COMPLETE = "requirements_complete"
 
 _DEFAULT_PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts" / "product_manager"
 
