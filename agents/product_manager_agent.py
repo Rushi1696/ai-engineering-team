@@ -20,12 +20,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-import re
 import time
 from typing import Any, Callable, Dict, Optional, Union
 import uuid
 
-from agents.base_agent import DEFAULT_MAX_RETRIES, BaseAgent
+from agents.base_agent import DEFAULT_MAX_RETRIES, BaseAgent, strip_metadata_header
 from state.engineering_state import EngineeringState
 from state.models import AgentExecutionMetadata, ErrorRecord, ProductRequirements
 from tools.shared.llm_client import LLMClient
@@ -37,23 +36,6 @@ _DEFAULT_PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts" / "pro
 def _now_iso() -> str:
     """Current UTC time as an ISO 8601 string."""
     return datetime.now(timezone.utc).isoformat()
-
-
-def strip_metadata_header(text: str) -> str:
-    """Strip YAML frontmatter (--- ... ---) or HTML comment (<!-- ... -->) header block.
-
-    Ensures prompt version and author metadata never reach the LLM inference call.
-    """
-    cleaned = text.lstrip()
-    if cleaned.startswith("---"):
-        match = re.match(r"^---\s*\n.*?\n---\s*\n?", cleaned, flags=re.DOTALL)
-        if match:
-            return cleaned[match.end():].lstrip()
-    elif cleaned.startswith("<!--"):
-        match = re.match(r"^<!--\s*\n.*?\n-->\s*\n?", cleaned, flags=re.DOTALL)
-        if match:
-            return cleaned[match.end():].lstrip()
-    return cleaned
 
 
 class ProductManagerAgent(BaseAgent):

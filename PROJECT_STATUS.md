@@ -144,6 +144,9 @@ Execution Metadata), and 21 criterion 7 (`total_invocations`).
   - `invoke()` never raises — failures are converted into a normal
     partial state update so the router can act on `workflow_status` /
     `human_approval_required` rather than the graph crashing.
+- Shared prompt helper `strip_metadata_header(text: str) -> str` stripping
+  YAML frontmatter and HTML comment blocks from prompt templates across
+  concrete agents without inter-agent imports (enforcing design.md §6 rule 3).
 
 **Status: Complete and tested** — 48 tests in
 `tests/agents/test_base_agent.py`, covering construction/validation,
