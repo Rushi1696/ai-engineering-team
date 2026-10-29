@@ -571,9 +571,12 @@ class FrontendAgent(BaseAgent):
             art.produced_at = completed_at
             updated_artifacts[art.file_path] = art
 
-        # 2. Update task statuses in task_plan (design.md §1.5)
-        for task in frontend_tasks:
-            task.status = "completed"
+        # 2. Update task statuses in task_plan (deep copy to avoid mutating input state)
+        updated_task_plan = task_plan.model_copy(deep=True)
+        frontend_task_ids = {t.task_id for t in frontend_tasks}
+        for task in updated_task_plan.tasks:
+            if task.task_id in frontend_task_ids:
+                task.status = "completed"
 
         # 3. Forward stage: advance to stage 5 idempotently (Req 21 crit 6)
         current_forward_stage = state.get("forward_stage", 0)
@@ -591,7 +594,7 @@ class FrontendAgent(BaseAgent):
 
         return {
             "code_artifacts": updated_artifacts,
-            "task_plan": task_plan,
+            "task_plan": updated_task_plan,
             "workflow_status": STATUS_FRONTEND_COMPLETE,
             "next_agent": "QAAgent",
             "current_agent": self.agent_name,

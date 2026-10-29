@@ -639,3 +639,30 @@ def test_frontend_invoke_lifecycle_success_and_exhaustion():
     assert update_fail["execution_metadata"]["FrontendAgent"].status == "failed"
     assert update_fail["total_invocations"] == 1
     assert "workflow_status" not in update_fail
+
+
+def test_frontend_input_state_task_plan_unchanged():
+    """Executing FrontendAgent must not mutate the input state's task_plan."""
+    client = FakeLLMClient(responses=[_sample_valid_frontend_artifacts_dict()])
+    agent = FrontendAgent(model_name="test-model", llm_client=client)
+
+    initial_plan = _sample_valid_task_plan()
+    # Ensure frontend tasks start in pending status
+    assert any(t.assigned_agent == "FrontendAgent" and t.status == "pending" for t in initial_plan.tasks)
+
+    state = create_initial_state(project_name="OrderApp", user_input="Build frontend")
+    state["requirements"] = _sample_valid_requirements()
+    state["architecture"] = _sample_valid_architecture()
+    state["task_plan"] = initial_plan
+
+    result = agent.execute(state)
+
+    # Returned task_plan has completed tasks
+    updated_tasks = {t.task_id: t for t in result["task_plan"].tasks}
+    assert updated_tasks["TASK-002"].status == "completed"
+
+    # Input state task_plan remains unchanged (deep copy verification)
+    input_tasks = {t.task_id: t for t in state["task_plan"].tasks}
+    assert input_tasks["TASK-002"].status == "pending"
+    assert state["task_plan"] is initial_plan
+

@@ -233,6 +233,7 @@ Sixth concrete pipeline agent, generating test plans and test artifacts based on
 - `tests/agents/test_qa_agent.py` & `tests/workflows/test_graph_qa.py` — 17 tests covering constructor validation, valid QA generation, test execution failure routing to DebugAgent, runner output truncation to 2000 chars, versioning, missing/invalid input fast-fails, retry recovery, retry exhaustion, forward stage idempotency, and real-graph execution routing (pass, fail then debug stub then re-run pass, runner always fails to global cap, exhaustion then approve, exhaustion then reject).
 
 **Status: Complete and tested** — Full test suite: **464 tests passed** (0 failures, 0 warnings).
+- **Known note**: QA regenerates the test suite each debug loop; decide at the real-LLM phase.
 
 ---
 

@@ -448,3 +448,104 @@ def test_qa_forward_stage_idempotency_on_reruns():
 
     result = agent.execute(state)
     assert result["forward_stage"] == 7
+
+
+def test_qa_input_state_task_plan_unchanged():
+    """Passing QAAgent execution must not mutate the input state's task_plan."""
+    client = FakeLLMClient(responses=[_sample_valid_qa_result_dict()])
+    runner = FakeTestRunner()
+    agent = QAAgent(model_name="test-model", llm_client=client, test_runner=runner)
+
+    initial_plan = _sample_valid_task_plan()
+    qa_tasks = [t for t in initial_plan.tasks if t.assigned_agent == "QAAgent"]
+    assert len(qa_tasks) > 0
+    assert all(t.status == "pending" for t in qa_tasks)
+
+    state = create_initial_state(project_name="OrderApp", user_input="Build test suite")
+    state["requirements"] = _sample_valid_requirements()
+    state["architecture"] = _sample_valid_architecture()
+    state["task_plan"] = initial_plan
+    state["code_artifacts"] = _sample_valid_code_artifacts()
+
+    result = agent.execute(state)
+
+    # Returned task_plan has completed QA task
+    updated_tasks = {t.task_id: t for t in result["task_plan"].tasks}
+    assert updated_tasks["TASK-002"].status == "completed"
+
+    # Input state task_plan remains unchanged (deep copy verification)
+    input_tasks = {t.task_id: t for t in state["task_plan"].tasks}
+    assert input_tasks["TASK-002"].status == "pending"
+    assert state["task_plan"] is initial_plan
+
+
+def test_qa_no_sleep_on_validation_errors():
+    """Validation errors during retry loop do not backoff-sleep; unhandled exceptions do."""
+    # Attempt 1: ValueError (validation error)
+    # Attempt 2: QAResult with empty test_artifacts (raises ValueError validation failure)
+    # Attempt 3: Valid QAResult
+    empty_artifacts_qa = _sample_valid_qa_result_dict()
+    empty_artifacts_qa["test_artifacts"] = []
+
+    client = FakeLLMClient(
+        responses=[
+            ValueError("Invalid schema field"),
+            empty_artifacts_qa,
+            _sample_valid_qa_result_dict(),
+        ]
+    )
+    runner = FakeTestRunner()
+    sleeps = []
+    agent = QAAgent(
+        model_name="test-model",
+        llm_client=client,
+        test_runner=runner,
+        sleep_fn=sleeps.append,
+    )
+
+    state = create_initial_state(project_name="OrderApp", user_input="Build test suite")
+    state["requirements"] = _sample_valid_requirements()
+    state["architecture"] = _sample_valid_architecture()
+    state["task_plan"] = _sample_valid_task_plan()
+    state["code_artifacts"] = _sample_valid_code_artifacts()
+
+    result = agent.execute(state)
+    assert result["workflow_status"] == STATUS_QA_COMPLETE
+    # Validation errors should have triggered 0 sleep calls
+    assert len(sleeps) == 0
+
+
+def test_qa_test_runner_exception_routes_to_exhaustion_without_retry():
+    """TestRunner exception routes straight to exhaustion without regenerating LLM."""
+    client = FakeLLMClient(responses=[_sample_valid_qa_result_dict(), _sample_valid_qa_result_dict()])
+    runner = FakeTestRunner(results=[RuntimeError("Test runner container crashed")])
+    sleeps = []
+    agent = QAAgent(
+        model_name="test-model",
+        llm_client=client,
+        test_runner=runner,
+        sleep_fn=sleeps.append,
+    )
+
+    state = create_initial_state(project_name="OrderApp", user_input="Build test suite")
+    state["requirements"] = _sample_valid_requirements()
+    state["architecture"] = _sample_valid_architecture()
+    state["task_plan"] = _sample_valid_task_plan()
+    state["code_artifacts"] = _sample_valid_code_artifacts()
+    state["workflow_status"] = "frontend_complete"
+
+    result = agent.execute(state)
+
+    # Exhaustion return triggered
+    assert result["human_approval_required"] is True
+    assert result["next_agent"] == "QAAgent"
+    # workflow_status preserved unchanged
+    assert "workflow_status" not in result
+    # Error record captures test runner failure
+    assert len(result["errors"]) == 1
+    assert "Test runner execution failed" in result["errors"][0].message
+    assert "Test runner container crashed" in result["errors"][0].message
+    # LLM was only called once, NOT regenerated on runner failure
+    assert len(client.calls) == 1
+    assert len(sleeps) == 0
+

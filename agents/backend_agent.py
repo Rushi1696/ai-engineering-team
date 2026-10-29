@@ -585,9 +585,12 @@ class BackendAgent(BaseAgent):
             art.produced_at = completed_at
             updated_artifacts[art.file_path] = art
 
-        # 2. Update task statuses in task_plan (design.md §1.4)
-        for task in backend_tasks:
-            task.status = "completed"
+        # 2. Update task statuses in task_plan (deep copy to avoid mutating input state)
+        updated_task_plan = task_plan.model_copy(deep=True)
+        backend_task_ids = {t.task_id for t in backend_tasks}
+        for task in updated_task_plan.tasks:
+            if task.task_id in backend_task_ids:
+                task.status = "completed"
 
         # 3. Forward stage: advance to stage 4 idempotently (Req 21 crit 6)
         current_forward_stage = state.get("forward_stage", 0)
@@ -605,7 +608,7 @@ class BackendAgent(BaseAgent):
 
         return {
             "code_artifacts": updated_artifacts,
-            "task_plan": task_plan,
+            "task_plan": updated_task_plan,
             "workflow_status": STATUS_BACKEND_COMPLETE,
             "next_agent": "FrontendAgent",
             "current_agent": self.agent_name,

@@ -242,6 +242,7 @@ class QAAgent(BaseAgent):
             user_context=f"user_input: {state.get('user_input', '')}",
         )
 
+        qa_result: Optional[QAResult] = None
         while attempt < remaining_attempts:
             prompt_to_use = user_prompt
             if attempt > 0:
@@ -268,36 +269,53 @@ class QAAgent(BaseAgent):
                 if not qa_result.test_artifacts or not qa_result.test_plan.strategy.strip():
                     raise ValueError("QAAgent: Generated test_plan or test_artifacts is empty")
 
-                return self._evaluate_and_build_return(
-                    state=state,
-                    started_at=started_at,
-                    qa_result=qa_result,
-                    code_artifacts=code_artifacts,
-                    task_plan=task_plan,
-                )
+                break
 
             except Exception as exc:
                 attempt += 1
                 last_error_message = str(exc)
+                is_validation = isinstance(exc, (ValueError, TypeError))
                 last_error_type = (
-                    "validation_failure" if isinstance(exc, ValueError) else "unhandled_exception"
+                    "validation_failure" if is_validation else "unhandled_exception"
                 )
                 import traceback
                 last_traceback = traceback.format_exc()
 
-                if attempt < remaining_attempts:
+                if attempt < remaining_attempts and not is_validation:
                     backoff_delay = 2.0 ** attempt
                     self.sleep_fn(backoff_delay)
 
-        # Exhaustion path
-        return self._build_exhaustion_return(
-            state=state,
-            started_at=started_at,
-            error_type=last_error_type,
-            error_message=f"Exhausted {remaining_attempts} attempts without valid QA result. Last error ({last_error_type}): {last_error_message}",
-            traceback_str=last_traceback,
-            attempt_count=attempt,
-        )
+        # Exhaustion path when LLM fails
+        if qa_result is None:
+            return self._build_exhaustion_return(
+                state=state,
+                started_at=started_at,
+                error_type=last_error_type,
+                error_message=f"Exhausted {remaining_attempts} attempts without valid QA result. Last error ({last_error_type}): {last_error_message}",
+                traceback_str=last_traceback,
+                attempt_count=attempt,
+            )
+
+        # Outside LLM retry loop: execute test runner and build return.
+        # A runner exception goes straight to exhaustion return without LLM regeneration.
+        try:
+            return self._evaluate_and_build_return(
+                state=state,
+                started_at=started_at,
+                qa_result=qa_result,
+                code_artifacts=code_artifacts,
+                task_plan=task_plan,
+            )
+        except Exception as exc:
+            import traceback
+            return self._build_exhaustion_return(
+                state=state,
+                started_at=started_at,
+                error_type="test_runner_error",
+                error_message=f"Test runner execution failed: {exc}",
+                traceback_str=traceback.format_exc(),
+                attempt_count=attempt,
+            )
 
     def _get_effective_max_retries(self, state: EngineeringState) -> int:
         """Resolve effective max retries ceiling for QAAgent."""
@@ -416,8 +434,9 @@ class QAAgent(BaseAgent):
             }
 
         # 5. Success path -> ReviewerAgent
-        # Mark QA tasks completed only on a passing run
-        for task in task_plan.tasks:
+        # Mark QA tasks completed only on a passing run (deep-copy task_plan to avoid mutating input state)
+        updated_task_plan = task_plan.model_copy(deep=True)
+        for task in updated_task_plan.tasks:
             if task.assigned_agent == self.agent_name:
                 task.status = "completed"
 
@@ -427,7 +446,7 @@ class QAAgent(BaseAgent):
         return {
             "test_plan": test_plan,
             "test_artifacts": updated_test_artifacts,
-            "task_plan": task_plan,
+            "task_plan": updated_task_plan,
             "workflow_status": STATUS_QA_COMPLETE,
             "next_agent": "ReviewerAgent",
             "current_agent": self.agent_name,
