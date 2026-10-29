@@ -58,7 +58,7 @@ User
 | TaskPlannerAgent (`agents/task_planner_agent.py`) | ✅ Complete and tested |
 | BackendAgent (`agents/backend_agent.py`) | ✅ Complete and tested |
 | FrontendAgent (`agents/frontend_agent.py`) | ✅ Complete and tested |
-| QAAgent | ⬜ Not started |
+| QAAgent (`agents/qa_agent.py`) | ✅ Complete and tested |
 | DebugAgent | ⬜ Not started |
 | ReviewerAgent | ⬜ Not started |
 | DevOpsAgent | ⬜ Not started |
@@ -223,11 +223,22 @@ Fifth concrete pipeline agent, implementing frontend `ImplementationTask` entrie
 
 **Status: Complete and tested** — Full test suite: **444 tests passed** (0 failures, 2 warnings).
 
+### QAAgent (`agents/qa_agent.py`)
+
+Sixth concrete pipeline agent, generating test plans and test artifacts based on requirements, architecture, task plan, and backend/frontend code artifacts, per `design.md` Section 1.6 and Section 6.1.
+
+- `agents/qa_agent.py` — Inherits from `BaseAgent`; features internal retry loop for validation recovery and exponential backoff; exhaustion return sets `human_approval_required=True` while keeping `workflow_status` unchanged; fast-fails on missing or empty requirements/architecture/task_plan/code_artifacts; executes tests via injected `TestRunner`; conditional routing: passes route to `ReviewerAgent` with `workflow_status=STATUS_QA_COMPLETE`, `forward_stage` advanced to 6, and `retry_counts["QAAgent"]=0`; test failures route to `DebugAgent` with `workflow_status=STATUS_DEBUG_REQUIRED`, `ErrorRecord(error_type="other", message="test_failure: ...")` truncated to 2000 chars, resetting `retry_counts["QAAgent"]=0` without advancing `forward_stage` or marking QA tasks completed; stamps and increments versions for `test_plan` and `test_artifacts` (Req 7 crit 3-4); preserves other agents' retry counts.
+- `tools/qa/test_runner.py` — `TestRunner` Protocol, `TestRunResult` dataclass, and `FakeTestRunner` returning scripted test results in order.
+- `prompts/qa/` — Markdown prompt templates (`system_prompt.md`, `user_prompt_template.md`, `revision_prompt.md`) with automated metadata header stripping.
+- `tests/agents/test_qa_agent.py` & `tests/workflows/test_graph_qa.py` — 17 tests covering constructor validation, valid QA generation, test execution failure routing to DebugAgent, runner output truncation to 2000 chars, versioning, missing/invalid input fast-fails, retry recovery, retry exhaustion, forward stage idempotency, and real-graph execution routing (pass, fail then debug stub then re-run pass, runner always fails to global cap, exhaustion then approve, exhaustion then reject).
+
+**Status: Complete and tested** — Full test suite: **464 tests passed** (0 failures, 0 warnings).
+
 ---
 
 ## Next Phase
 
-**QAAgent** (`agents/qa_agent.py`) — The sixth concrete pipeline agent, generating test plans and automated tests based on requirements, architecture, and code artifacts, per `design.md` Section 1.6 and Section 6.1.
+**DebugAgent** (`agents/debug_agent.py`) — The seventh concrete pipeline agent, diagnosing failures, modifying code or test artifacts, and routing back to appropriate agents or human approval, per `design.md` Section 1.7 and Section 6.1.
 
 ---
 
