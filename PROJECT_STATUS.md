@@ -59,7 +59,7 @@ User
 | BackendAgent (`agents/backend_agent.py`) | ✅ Complete and tested |
 | FrontendAgent (`agents/frontend_agent.py`) | ✅ Complete and tested |
 | QAAgent (`agents/qa_agent.py`) | ✅ Complete and tested |
-| DebugAgent | ⬜ Not started |
+| DebugAgent (`agents/debug_agent.py`) | ✅ Complete and tested |
 | ReviewerAgent | ⬜ Not started |
 | DevOpsAgent | ⬜ Not started |
 | DocumentationAgent | ⬜ Not started |
@@ -235,11 +235,27 @@ Sixth concrete pipeline agent, generating test plans and test artifacts based on
 **Status: Complete and tested** — Full test suite: **464 tests passed** (0 failures, 0 warnings).
 - **Known note**: QA regenerates the test suite each debug loop; decide at the real-LLM phase.
 
+### DebugAgent (`agents/debug_agent.py`)
+
+Seventh concrete pipeline agent, diagnosing failures, producing corrected code and test artifacts, and routing back to appropriate agents or human approval, per `design.md` Section 1.7 and Section 6.1.
+
+- `agents/debug_agent.py` — Inherits from `BaseAgent`; features internal retry loop for validation recovery and exponential backoff; exhaustion return sets `human_approval_required=True` while keeping `workflow_status` unchanged and without incrementing `total_debug_cycles`; fast-fails on missing or unresolvable error inputs; uses `ErrorLogParser` to extract structured error details; validates candidate fixes in isolation via `CodeExecutionSandbox`; generates structured `DebugResolution` with per-file versioning increments for corrected `code_artifacts` and `test_artifacts`; resolves target errors by appending a resolved copy (`same error_id, resolved=True, resolution_agent, resolution_notes`); clears `current_debug_target` to `""`; increments `total_debug_cycles` by 1 only on completed fix attempts; sets `next_agent` to one of the 7 permitted targets (`validate_debug_agent_next_agent`) while leaving `workflow_status` unchanged; resets `retry_counts["DebugAgent"]=0` on success.
+- `tools/debug/sandbox.py` — `CodeExecutionSandbox` Protocol, `SandboxExecutionResult` dataclass, and `FakeExecutionSandbox` test double.
+- `tools/debug/log_parser.py` — `ErrorLogParser` Protocol, `ParsedErrorLog` dataclass, and `FakeLogParser` rule-based/scripted test double.
+- `prompts/debug/` — Markdown prompt templates (`system_prompt.md`, `user_prompt_template.md`, `revision_prompt.md`) with automated metadata header stripping.
+- `state/reducers.py` — Added `unresolved_errors(errors)` pure helper to keep the last record per `error_id` and return unresolved ones.
+- **Architectural & Design Notes**:
+  - **Req 12 crit 5 deviation**: Because `EngineeringState.errors` uses `append_reducer`, resolving an error in-place would conflict with append-only semantics. DebugAgent appends a resolved copy with the same `error_id` and `resolved=True`, while `unresolved_errors(errors)` filters out resolved errors.
+  - **Global debug cap off-by-one**: Documented that `max_debug_cycles=N means N-1 verified fixes` because `router_after_debug` evaluates P2 (`total_debug_cycles >= max_debug_cycles`) immediately upon cycle increment before downstream re-testing.
+- `tests/agents/test_debug_agent.py` & `tests/workflows/test_graph_debug.py` — 13 tests covering constructor validation, QA failure resolution, Reviewer requires_changes handling, sandbox verification recovery, exhaustion without cycle increment, falsy `current_debug_target` handling, fast-fails on empty errors, invoke lifecycle, and real-graph execution (QA failure loop, Reviewer requires_changes loop, global cap termination, exhaustion approve/reject, and error deduplication).
+
+**Status: Complete and tested** — Full test suite: **483 tests passed** (0 failures, 0 warnings).
+
 ---
 
 ## Next Phase
 
-**DebugAgent** (`agents/debug_agent.py`) — The seventh concrete pipeline agent, diagnosing failures, modifying code or test artifacts, and routing back to appropriate agents or human approval, per `design.md` Section 1.7 and Section 6.1.
+**ReviewerAgent** (`agents/reviewer_agent.py`) — The eighth concrete pipeline agent, performing holistic code review across code artifacts, test artifacts, and architecture specifications, per `design.md` Section 1.8 and Section 6.1.
 
 ---
 

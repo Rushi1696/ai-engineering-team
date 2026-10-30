@@ -187,6 +187,22 @@ def resolve_error_record(
     return result
 
 
+def unresolved_errors(errors: Optional[List[ErrorRecord]]) -> List[ErrorRecord]:
+    """Return all currently unresolved ErrorRecord entries from errors.
+
+    Because the errors field uses append_reducer, resolving an error appends
+    a new record with the same error_id and resolved=True. This helper keeps
+    the LAST record seen for each error_id and returns only those where
+    resolved is False.
+    """
+    if not errors:
+        return []
+    latest_by_id: dict[str, ErrorRecord] = {}
+    for err in errors:
+        latest_by_id[err.error_id] = err
+    return [err for err in latest_by_id.values() if not err.resolved]
+
+
 # ---------------------------------------------------------------------------
 # Requirement 16 criteria 3-4: memory_references_reducer (composite,
 # field-specific reducer for the memory_references field only)
@@ -238,5 +254,6 @@ __all__ = [
     "dict_merge_reducer",
     "append_reducer",
     "resolve_error_record",
+    "unresolved_errors",
     "memory_references_reducer",
 ]

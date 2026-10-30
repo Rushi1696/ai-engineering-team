@@ -749,5 +749,80 @@ def test_langgraph_importability_does_not_crash_if_absent():
     assert "import langgraph" not in open(es_module.__file__).read()
 
 
+def test_unresolved_errors_helper():
+    """Verify unresolved_errors keeps the LAST record per error_id and returns only unresolved ones."""
+    from state.reducers import unresolved_errors
+
+    # 1. Empty / None input
+    assert unresolved_errors(None) == []
+    assert unresolved_errors([]) == []
+
+    # 2. Single unresolved
+    e1_open = ErrorRecord(
+        error_id="err-1",
+        agent="BackendAgent",
+        stage="backend",
+        error_type="unhandled_exception",
+        message="Failure 1",
+        occurred_at="2026-01-01T00:00:00Z",
+        resolved=False,
+    )
+    assert unresolved_errors([e1_open]) == [e1_open]
+
+    # 3. Single resolved
+    e1_resolved = ErrorRecord(
+        error_id="err-1",
+        agent="DebugAgent",
+        stage="debug",
+        error_type="unhandled_exception",
+        message="Failure 1",
+        occurred_at="2026-01-01T00:01:00Z",
+        resolved=True,
+        resolution_agent="DebugAgent",
+        resolution_notes="Fixed bug in code",
+    )
+    assert unresolved_errors([e1_resolved]) == []
+
+    # 4. Appended resolution replaces status (last record for err-1 is resolved)
+    e2_open = ErrorRecord(
+        error_id="err-2",
+        agent="FrontendAgent",
+        stage="frontend",
+        error_type="validation_failure",
+        message="Failure 2",
+        occurred_at="2026-01-01T00:02:00Z",
+        resolved=False,
+    )
+    errors_list = [e1_open, e2_open, e1_resolved]
+    unresolved = unresolved_errors(errors_list)
+    assert len(unresolved) == 1
+    assert unresolved[0].error_id == "err-2"
+    assert unresolved[0].resolved is False
+
+    # 5. Multiple errors with partial resolutions
+    e3_open = ErrorRecord(
+        error_id="err-3",
+        agent="QAAgent",
+        stage="qa",
+        error_type="other",
+        message="test_failure: test_auth failed",
+        occurred_at="2026-01-01T00:03:00Z",
+        resolved=False,
+    )
+    e2_resolved = ErrorRecord(
+        error_id="err-2",
+        agent="DebugAgent",
+        stage="debug",
+        error_type="validation_failure",
+        message="Failure 2",
+        occurred_at="2026-01-01T00:04:00Z",
+        resolved=True,
+    )
+    all_errors = [e1_open, e2_open, e1_resolved, e3_open, e2_resolved]
+    remaining = unresolved_errors(all_errors)
+    assert len(remaining) == 1
+    assert remaining[0].error_id == "err-3"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
