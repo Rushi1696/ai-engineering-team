@@ -23,7 +23,7 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 
-from agents.base_agent import BaseAgent, strip_metadata_header
+from agents.base_agent import BaseAgent, DEFAULT_MAX_RETRIES, strip_metadata_header
 from state.engineering_state import EngineeringState
 from state.models import (
     AgentExecutionMetadata,
@@ -41,17 +41,16 @@ from state.validators import (
     WORKFLOW_STATUS_VALUES,
     validate_debug_agent_next_agent,
 )
-from tools.debug.log_parser import ErrorLogParser, FakeLogParser, ParsedErrorLog
-from tools.debug.sandbox import CodeExecutionSandbox, FakeExecutionSandbox
+from tools.debug.log_parser import ErrorLogParser, ParsedErrorLog, RegexLogParser
+from tools.debug.sandbox import CodeExecutionSandbox
 from tools.shared.llm_client import LLMClient
 
 # Local status constants (guarded by test_architecture_rules to ensure membership in WORKFLOW_STATUS_VALUES)
 STATUS_DEBUG_REQUIRED: str = "debug_required"
 STATUS_FAILED: str = "failed"
-assert STATUS_DEBUG_REQUIRED in WORKFLOW_STATUS_VALUES
-assert STATUS_FAILED in WORKFLOW_STATUS_VALUES
+if STATUS_DEBUG_REQUIRED not in WORKFLOW_STATUS_VALUES or STATUS_FAILED not in WORKFLOW_STATUS_VALUES:
+    raise ImportError("Local status constant is not a valid workflow status")
 
-DEFAULT_MAX_RETRIES: int = 3
 _DEFAULT_PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts" / "debug"
 
 
@@ -100,7 +99,7 @@ class DebugAgent(BaseAgent):
         self,
         model_name: str,
         llm_client: LLMClient,
-        sandbox: Optional[CodeExecutionSandbox] = None,
+        sandbox: CodeExecutionSandbox,
         log_parser: Optional[ErrorLogParser] = None,
         max_retries: int = DEFAULT_MAX_RETRIES,
         sleep_fn: Callable[[float], None] = time.sleep,
@@ -110,7 +109,7 @@ class DebugAgent(BaseAgent):
         Args:
             model_name: Model identifier (e.g. from configs/agents.yaml).
             llm_client: Structured LLM client implementation conforming to LLMClient Protocol.
-            sandbox: Code execution sandbox for verifying candidate fixes in isolation.
+            sandbox: Code execution sandbox for verifying candidate fixes in isolation (required).
             log_parser: Error log parser for extracting structured traceback and failure data.
             max_retries: Default retry ceiling passed to BaseAgent constructor.
             sleep_fn: Injectable sleep function for backoff timing (defaults to time.sleep).
@@ -120,15 +119,15 @@ class DebugAgent(BaseAgent):
             raise ValueError("DebugAgent: model_name must be a non-empty string")
         if llm_client is None:
             raise ValueError("DebugAgent: llm_client must not be None")
+        if sandbox is None:
+            raise ValueError("DebugAgent: sandbox must not be None")
 
         super().__init__(agent_name="DebugAgent", max_retries=max_retries)
         self.model_name = model_name
         self.llm_client = llm_client
-        self.sandbox: CodeExecutionSandbox = (
-            sandbox if sandbox is not None else FakeExecutionSandbox()
-        )
+        self.sandbox: CodeExecutionSandbox = sandbox
         self.log_parser: ErrorLogParser = (
-            log_parser if log_parser is not None else FakeLogParser()
+            log_parser if log_parser is not None else RegexLogParser()
         )
         self.sleep_fn = sleep_fn
         self.prompts_dir = Path(prompts_dir) if prompts_dir else _DEFAULT_PROMPTS_DIR
@@ -171,30 +170,30 @@ class DebugAgent(BaseAgent):
                 attempt_count=0,
             )
 
-        # 1. Identify target ErrorRecord using unresolved_errors and current_debug_target
+        # 1. Identify target ErrorRecord using current_debug_target first, then unresolved_errors
         errors: List[ErrorRecord] = state.get("errors") or []
         unresolved: List[ErrorRecord] = unresolved_errors(errors)
 
         target_error: Optional[ErrorRecord] = None
         raw_target_id = state.get("current_debug_target")
-        # Decision 2: Treat falsy (None, "") as none
+        # Use current_debug_target first (latest copy by error_id)
         if raw_target_id:
-            for err in unresolved:
+            for err in reversed(errors):
                 if err.error_id == raw_target_id:
                     target_error = err
                     break
-            if target_error is None:
-                for err in errors:
-                    if err.error_id == raw_target_id:
-                        target_error = err
-                        break
 
-        if target_error is None and unresolved:
-            target_error = unresolved[-1]
+        # Fall back to the last unresolved error of a type other than "retry_exhausted"
+        if target_error is None:
+            actionable_unresolved = [
+                err for err in unresolved if err.error_type != "retry_exhausted"
+            ]
+            if actionable_unresolved:
+                target_error = actionable_unresolved[-1]
 
         review_report: Optional[ReviewReport] = state.get("review_report")
         if target_error is None:
-            # Handle Reviewer requires_changes path if no unresolved ErrorRecord exists
+            # Keep the Reviewer synthetic-record path only when no real target exists
             if (
                 review_report is not None
                 and getattr(review_report, "overall_status", None) == "requires_changes"
@@ -349,25 +348,6 @@ class DebugAgent(BaseAgent):
                     next_agent_value=candidate.target_agent,
                 )
 
-                # Validation C: CodeExecutionSandbox verification (Decision 7)
-                merged_code = dict(code_artifacts)
-                for art in candidate.corrected_code_artifacts:
-                    merged_code[art.file_path] = art
-
-                merged_tests = dict(test_artifacts)
-                for art in candidate.corrected_test_artifacts:
-                    merged_tests[art.file_path] = art
-
-                sandbox_result = self.sandbox.execute_in_sandbox(
-                    code_artifacts=merged_code,
-                    test_artifacts=merged_tests,
-                )
-                if not sandbox_result.passed:
-                    raise ValueError(
-                        f"Sandbox verification failed (exit code {sandbox_result.exit_code}): "
-                        f"{sandbox_result.output or sandbox_result.stderr}"
-                    )
-
                 resolution = candidate
                 break
 
@@ -386,7 +366,7 @@ class DebugAgent(BaseAgent):
                     backoff_delay = 2.0 ** attempt
                     self.sleep_fn(backoff_delay)
 
-        # 5. Handle exhaustion
+        # 5. Handle exhaustion if LLM fails
         if resolution is None:
             return self._build_exhaustion_return(
                 state=state,
@@ -400,7 +380,38 @@ class DebugAgent(BaseAgent):
                 attempt_count=attempt,
             )
 
-        # 6. Build success return
+        # 6. Outside LLM retry loop: execute sandbox verification (item 4)
+        # A sandbox exception goes straight to exhaustion without LLM regeneration.
+        try:
+            merged_code = dict(code_artifacts)
+            for art in resolution.corrected_code_artifacts:
+                merged_code[art.file_path] = art
+
+            merged_tests = dict(test_artifacts)
+            for art in resolution.corrected_test_artifacts:
+                merged_tests[art.file_path] = art
+
+            sandbox_result = self.sandbox.execute_in_sandbox(
+                code_artifacts=merged_code,
+                test_artifacts=merged_tests,
+            )
+            if not sandbox_result.passed:
+                raise RuntimeError(
+                    f"Sandbox verification failed (exit code {sandbox_result.exit_code}): "
+                    f"{sandbox_result.output or sandbox_result.stderr}"
+                )
+        except Exception as exc:
+            import traceback
+            return self._build_exhaustion_return(
+                state=state,
+                started_at=started_at,
+                error_type="sandbox_error",
+                error_message=f"Sandbox execution failed: {exc}",
+                traceback_str=traceback.format_exc(),
+                attempt_count=attempt,
+            )
+
+        # 7. Build success return
         return self._build_success_return(
             state=state,
             started_at=started_at,

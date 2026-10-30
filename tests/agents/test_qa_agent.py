@@ -257,6 +257,7 @@ def test_qa_test_failure_path_routes_to_debug():
     assert err.message.startswith("test_failure:")
     assert "tests/test_auth.py::test_login" in err.message
     assert "AssertionError: 500 != 200" in err.message
+    assert result["current_debug_target"] == err.error_id
 
 
 def test_qa_test_failure_truncates_runner_output_to_2000_chars():

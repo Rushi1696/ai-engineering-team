@@ -427,6 +427,7 @@ class QAAgent(BaseAgent):
                 "next_agent": "DebugAgent",
                 "current_agent": self.agent_name,
                 "errors": [error_record],
+                "current_debug_target": error_record.error_id,
                 "retry_counts": updated_retry_counts,
                 "agent_scratchpad": {self.agent_name: str(scratchpad_summary)},
                 "state_version": state.get("state_version", 0) + 1,

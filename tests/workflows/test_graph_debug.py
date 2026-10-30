@@ -301,6 +301,7 @@ def test_graph_debug_qa_failure_loop():
 
     assert final_state["workflow_status"] == STATUS_COMPLETED
     assert final_state["total_debug_cycles"] == 1
+    assert final_state["current_debug_target"] == ""
     assert final_state["code_artifacts"]["app/auth.py"].version == 2
     assert final_state["code_artifacts"]["app/auth.py"].produced_by == "DebugAgent"
 
@@ -316,7 +317,11 @@ def test_graph_debug_qa_failure_loop():
 def test_graph_debug_reviewer_requires_changes_loop():
     """Reviewer requires_changes routes to DebugAgent, which resolves and routes to Backend -> Reviewer approved."""
     client = FakeLLMClient(responses=[_sample_debug_resolution_dict("BackendAgent")])
-    debug_agent = DebugAgent(model_name="test-model", llm_client=client)
+    debug_agent = DebugAgent(
+        model_name="test-model",
+        llm_client=client,
+        sandbox=FakeExecutionSandbox(),
+    )
 
     agents = _build_pipeline_stubs()
     agents[NODE_DEBUG] = debug_agent.invoke
@@ -385,6 +390,7 @@ def test_graph_debug_reviewer_requires_changes_loop():
 
     assert final_state["workflow_status"] == STATUS_COMPLETED
     assert final_state["total_debug_cycles"] == 1
+    assert final_state["current_debug_target"] == ""
     assert final_state["code_artifacts"]["app/auth.py"].version == 2
     assert unresolved_errors(final_state["errors"]) == []
 
@@ -405,7 +411,11 @@ def test_graph_debug_cap_termination():
             _sample_debug_resolution_dict("BackendAgent"),
         ]
     )
-    debug_agent = DebugAgent(model_name="test-model", llm_client=client)
+    debug_agent = DebugAgent(
+        model_name="test-model",
+        llm_client=client,
+        sandbox=FakeExecutionSandbox(),
+    )
 
     agents = _build_pipeline_stubs()
     agents[NODE_DEBUG] = debug_agent.invoke
@@ -467,6 +477,7 @@ def test_graph_debug_exhaustion_approval_and_rejection():
     debug_agent_a = DebugAgent(
         model_name="test-model",
         llm_client=client_a,
+        sandbox=FakeExecutionSandbox(),
         max_retries=3,
         sleep_fn=lambda s: None,
     )
@@ -543,6 +554,7 @@ def test_graph_debug_exhaustion_approval_and_rejection():
     debug_agent_b = DebugAgent(
         model_name="test-model",
         llm_client=client_b,
+        sandbox=FakeExecutionSandbox(),
         max_retries=3,
         sleep_fn=lambda s: None,
     )
@@ -613,7 +625,11 @@ def test_graph_debug_exhaustion_approval_and_rejection():
 def test_graph_debug_no_duplicate_errors_after_resolution():
     """Verifies that after DebugAgent resolves an error by appending, unresolved_errors contains no duplicates."""
     client = FakeLLMClient(responses=[_sample_debug_resolution_dict("BackendAgent")])
-    debug_agent = DebugAgent(model_name="test-model", llm_client=client)
+    debug_agent = DebugAgent(
+        model_name="test-model",
+        llm_client=client,
+        sandbox=FakeExecutionSandbox(),
+    )
 
     err1 = ErrorRecord(
         error_id="err-101",

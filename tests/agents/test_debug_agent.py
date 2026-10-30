@@ -145,18 +145,24 @@ def test_debug_agent_constructor_validation():
     """DebugAgent constructor validates model_name and llm_client."""
     client = FakeLLMClient()
 
-    with pytest.raises(ValueError, match="model_name must be a non-empty string"):
-        DebugAgent(model_name="", llm_client=client)
+    sandbox = FakeExecutionSandbox()
 
     with pytest.raises(ValueError, match="model_name must be a non-empty string"):
-        DebugAgent(model_name="   ", llm_client=client)
+        DebugAgent(model_name="", llm_client=client, sandbox=sandbox)
+
+    with pytest.raises(ValueError, match="model_name must be a non-empty string"):
+        DebugAgent(model_name="   ", llm_client=client, sandbox=sandbox)
 
     with pytest.raises(ValueError, match="llm_client must not be None"):
-        DebugAgent(model_name="test-model", llm_client=None)
+        DebugAgent(model_name="test-model", llm_client=None, sandbox=FakeExecutionSandbox())
 
-    # Defaults for sandbox and log_parser
-    agent = DebugAgent(model_name="test-model", llm_client=client)
-    assert agent.sandbox is not None
+    with pytest.raises(ValueError, match="sandbox must not be None"):
+        DebugAgent(model_name="test-model", llm_client=client, sandbox=None)
+
+    # Defaults for log_parser
+    sandbox = FakeExecutionSandbox()
+    agent = DebugAgent(model_name="test-model", llm_client=client, sandbox=sandbox)
+    assert agent.sandbox is sandbox
     assert agent.log_parser is not None
     assert agent.agent_name == "DebugAgent"
 
@@ -265,7 +271,11 @@ def test_debug_agent_resolves_reviewer_requires_changes():
     resolution = _sample_valid_resolution_dict()
     resolution["target_agent"] = "FrontendAgent"
     client = FakeLLMClient(responses=[resolution])
-    agent = DebugAgent(model_name="test-model", llm_client=client)
+    agent = DebugAgent(
+        model_name="test-model",
+        llm_client=client,
+        sandbox=FakeExecutionSandbox(),
+    )
 
     state = create_initial_state(project_name="OrderApp", user_input="Fix review")
     state["requirements"] = _sample_valid_requirements()
@@ -298,12 +308,12 @@ def test_debug_agent_resolves_reviewer_requires_changes():
 
 
 # ===========================================================================
-# 4. Sandbox Retry and Recovery
+# 4. Sandbox Failure Routes Straight to Exhaustion (Item 4)
 # ===========================================================================
 
 
-def test_debug_agent_recovers_after_sandbox_failure():
-    """Sandbox failure causes internal retry without backoff sleep, succeeding on second attempt."""
+def test_debug_agent_sandbox_failure_routes_to_exhaustion_without_retry():
+    """Sandbox execution failure or exception goes straight to exhaustion without regenerating LLM."""
     client = FakeLLMClient(
         responses=[
             _sample_valid_resolution_dict(),
@@ -312,16 +322,7 @@ def test_debug_agent_recovers_after_sandbox_failure():
     )
     sandbox = FakeExecutionSandbox(
         results=[
-            SandboxExecutionResult(
-                passed=False,
-                exit_code=1,
-                output="AssertionError: 500 != 200 still failing",
-            ),
-            SandboxExecutionResult(
-                passed=True,
-                exit_code=0,
-                output="1 passed in 0.01s",
-            ),
+            RuntimeError("Sandbox container crashed"),
         ]
     )
     sleeps = []
@@ -350,12 +351,16 @@ def test_debug_agent_recovers_after_sandbox_failure():
 
     result = agent.execute(state)
 
-    # Succeeded on second attempt
-    assert result["next_agent"] == "BackendAgent"
-    assert result["total_debug_cycles"] == 1
-    assert len(client.calls) == 2
-    assert len(sandbox.calls) == 2
-    # Sandbox validation failure does NOT backoff sleep
+    # Exhaustion return triggered directly
+    assert result["human_approval_required"] is True
+    assert result["next_agent"] == "DebugAgent"
+    assert "total_debug_cycles" not in result
+    assert "workflow_status" not in result
+    assert len(result["errors"]) == 1
+    assert result["errors"][0].error_type == "retry_exhausted"
+    assert "Sandbox container crashed" in result["errors"][0].message
+    # LLM was only called once, NOT regenerated on sandbox failure
+    assert len(client.calls) == 1
     assert len(sleeps) == 0
 
 
@@ -377,6 +382,7 @@ def test_debug_agent_total_debug_cycles_never_increments_on_exhaustion():
     agent = DebugAgent(
         model_name="test-model",
         llm_client=client,
+        sandbox=FakeExecutionSandbox(),
         sleep_fn=sleeps.append,
     )
 
@@ -420,7 +426,11 @@ def test_debug_agent_total_debug_cycles_never_increments_on_exhaustion():
 def test_debug_agent_falsy_current_debug_target_falls_back_to_last_unresolved():
     """Empty string current_debug_target is treated as falsy, selecting latest unresolved error."""
     client = FakeLLMClient(responses=[_sample_valid_resolution_dict()])
-    agent = DebugAgent(model_name="test-model", llm_client=client)
+    agent = DebugAgent(
+        model_name="test-model",
+        llm_client=client,
+        sandbox=FakeExecutionSandbox(),
+    )
 
     e1 = ErrorRecord(
         error_id="err-first",
@@ -465,7 +475,11 @@ def test_debug_agent_falsy_current_debug_target_falls_back_to_last_unresolved():
 def test_debug_agent_fast_fails_when_no_unresolved_errors():
     """DebugAgent returns exhaustion when no unresolved errors or review findings exist."""
     client = FakeLLMClient()
-    agent = DebugAgent(model_name="test-model", llm_client=client)
+    agent = DebugAgent(
+        model_name="test-model",
+        llm_client=client,
+        sandbox=FakeExecutionSandbox(),
+    )
 
     state = create_initial_state(project_name="OrderApp", user_input="Fix bug")
     state["requirements"] = _sample_valid_requirements()
@@ -490,7 +504,11 @@ def test_debug_agent_fast_fails_when_no_unresolved_errors():
 def test_debug_agent_invoke_lifecycle():
     """BaseAgent.invoke merges execution metadata and increments total_invocations."""
     client = FakeLLMClient(responses=[_sample_valid_resolution_dict()])
-    agent = DebugAgent(model_name="test-model", llm_client=client)
+    agent = DebugAgent(
+        model_name="test-model",
+        llm_client=client,
+        sandbox=FakeExecutionSandbox(),
+    )
 
     err = ErrorRecord(
         error_id="err-1",
@@ -513,3 +531,101 @@ def test_debug_agent_invoke_lifecycle():
     assert update["total_invocations"] == 1
     assert update["execution_metadata"]["DebugAgent"].status == "completed"
     assert update["next_agent"] == "BackendAgent"
+
+
+# ===========================================================================
+# 9. Stale retry_exhausted Error Handling (Item 2)
+# ===========================================================================
+
+
+def test_debug_agent_skips_stale_retry_exhausted_errors():
+    """DebugAgent ignores unresolved errors of type 'retry_exhausted', selecting real error."""
+    client = FakeLLMClient(responses=[_sample_valid_resolution_dict()])
+    agent = DebugAgent(
+        model_name="test-model",
+        llm_client=client,
+        sandbox=FakeExecutionSandbox(),
+    )
+
+    real_err = ErrorRecord(
+        error_id="err-real-failure",
+        agent="BackendAgent",
+        stage="backend",
+        error_type="other",
+        message="Actual code failure",
+        occurred_at="2026-01-01T00:00:00Z",
+        resolved=False,
+    )
+    stale_exhaustion = ErrorRecord(
+        error_id="err-stale-exhaustion",
+        agent="BackendAgent",
+        stage="backend",
+        error_type="retry_exhausted",
+        message="BackendAgent reached retry limit",
+        occurred_at="2026-01-01T00:01:00Z",
+        resolved=False,
+    )
+
+    state = create_initial_state(project_name="OrderApp", user_input="Fix bug")
+    state["requirements"] = _sample_valid_requirements()
+    state["architecture"] = _sample_valid_architecture()
+    state["task_plan"] = _sample_valid_task_plan()
+    state["code_artifacts"] = _sample_valid_code_artifacts()
+    state["errors"] = [real_err, stale_exhaustion]
+    state["current_debug_target"] = ""
+
+    result = agent.execute(state)
+
+    # Resolved the real error, skipping stale retry_exhausted
+    assert len(result["errors"]) == 1
+    assert result["errors"][0].error_id == "err-real-failure"
+    assert result["errors"][0].resolved is True
+
+
+# ===========================================================================
+# 10. Input State Unchanged (Item 7)
+# ===========================================================================
+
+
+def test_debug_agent_input_state_unchanged():
+    """Executing DebugAgent must not mutate input state dictionary or its objects."""
+    client = FakeLLMClient(responses=[_sample_valid_resolution_dict()])
+    agent = DebugAgent(
+        model_name="test-model",
+        llm_client=client,
+        sandbox=FakeExecutionSandbox(),
+    )
+
+    initial_plan = _sample_valid_task_plan()
+    initial_code = _sample_valid_code_artifacts()
+    err = ErrorRecord(
+        error_id="err-qa-1",
+        agent="QAAgent",
+        stage="debug_required",
+        error_type="other",
+        message="test failure",
+        occurred_at="2026-01-01T00:00:00Z",
+        resolved=False,
+    )
+
+    state = create_initial_state(project_name="OrderApp", user_input="Fix bug")
+    state["requirements"] = _sample_valid_requirements()
+    state["architecture"] = _sample_valid_architecture()
+    state["task_plan"] = initial_plan
+    state["code_artifacts"] = initial_code
+    state["errors"] = [err]
+    state["current_debug_target"] = "err-qa-1"
+    state["total_debug_cycles"] = 0
+
+    result = agent.execute(state)
+
+    # Output has version 2 and completed cycle
+    assert result["code_artifacts"]["src/auth.py"].version == 2
+    assert result["total_debug_cycles"] == 1
+
+    # Input state is unchanged
+    assert state["task_plan"] is initial_plan
+    assert state["code_artifacts"]["src/auth.py"].version == 1
+    assert state["errors"][0].resolved is False
+    assert state["current_debug_target"] == "err-qa-1"
+    assert state["total_debug_cycles"] == 0

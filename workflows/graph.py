@@ -25,6 +25,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from state.engineering_state import EngineeringState
 from state.models import ErrorRecord
+from state.reducers import unresolved_errors
 from workflows.constants import (
     AGENT_NODE_ORDER,
     NODE_ARCHITECT,
@@ -109,13 +110,15 @@ def global_cap_handler_node(state: EngineeringState) -> Dict[str, Any]:
     current_agent = state.get("current_agent") or "unknown"
 
     errors = state.get("errors", [])
+    unresolved = unresolved_errors(errors)
     last_unresolved_msg = ""
-    for err in reversed(errors):
-        # Handle both Pydantic ErrorRecord instances and dict objects defensively
-        is_resolved = getattr(err, "resolved", False) if not isinstance(err, dict) else err.get("resolved", False)
-        if not is_resolved:
-            last_unresolved_msg = getattr(err, "message", "") if not isinstance(err, dict) else err.get("message", "")
-            break
+    if unresolved:
+        last_unresolved = unresolved[-1]
+        last_unresolved_msg = (
+            getattr(last_unresolved, "message", "")
+            if not isinstance(last_unresolved, dict)
+            else last_unresolved.get("message", "")
+        )
 
     notes = f"Global debug cycle cap reached ({total_cycles}/{max_cycles}). Last agent: {current_agent}."
     if last_unresolved_msg:

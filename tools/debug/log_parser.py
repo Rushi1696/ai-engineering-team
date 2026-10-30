@@ -40,8 +40,46 @@ class ErrorLogParser(Protocol):
         ...
 
 
-class FakeLogParser:
-    """Default rule-based or scripted ErrorLogParser implementation."""
+class RegexLogParser:
+    """Production rule-based ErrorLogParser implementation using regex."""
+
+    __test__ = False
+
+    def parse_error_log(
+        self,
+        message: str,
+        traceback: Optional[str] = None,
+    ) -> ParsedErrorLog:
+        """Parse error message and traceback using regex extraction."""
+        failing_files: List[str] = []
+        msg = message or ""
+        tb = traceback or ""
+
+        # Extract file paths from patterns like File "path", line X or path::test
+        for m in re.finditer(r'File ["\']([^"\']+)["\']', tb + "\n" + msg):
+            path = m.group(1).replace("\\", "/")
+            if path not in failing_files:
+                failing_files.append(path)
+        for m in re.finditer(r'([a-zA-Z0-9_\-\./]+\.py)', msg):
+            path = m.group(1).replace("\\", "/")
+            if path not in failing_files:
+                failing_files.append(path)
+
+        exc_type = "Error"
+        if ":" in msg:
+            exc_type = msg.split(":", 1)[0].strip()
+
+        return ParsedErrorLog(
+            failing_files=failing_files,
+            exception_type=exc_type,
+            error_message=msg,
+            stack_frames=[tb] if tb else [],
+            raw_truncated=(msg + "\n" + tb)[:2000],
+        )
+
+
+class FakeLogParser(RegexLogParser):
+    """Test double implementing ErrorLogParser returning scripted results in order, falling back to RegexLogParser."""
 
     __test__ = False
 
@@ -75,30 +113,5 @@ class FakeLogParser:
                 return ParsedErrorLog(**next_res)
             return next_res
 
-        # Rule-based fallback parser
-        failing_files: List[str] = []
-        msg = message or ""
-        tb = traceback or ""
-
-        # Extract file paths from patterns like File "path", line X or path::test
-        for m in re.finditer(r'File ["\']([^"\']+)["\']', tb + "\n" + msg):
-            path = m.group(1).replace("\\", "/")
-            if path not in failing_files:
-                failing_files.append(path)
-        for m in re.finditer(r'([a-zA-Z0-9_\-\./]+\.py)', msg):
-            path = m.group(1).replace("\\", "/")
-            if path not in failing_files:
-                failing_files.append(path)
-
-        exc_type = "Error"
-        if ":" in msg:
-            exc_type = msg.split(":", 1)[0].strip()
-
-        return ParsedErrorLog(
-            failing_files=failing_files,
-            exception_type=exc_type,
-            error_message=msg,
-            stack_frames=[tb] if tb else [],
-            raw_truncated=(msg + "\n" + tb)[:2000],
-        )
+        return super().parse_error_log(message, traceback)
 
