@@ -60,7 +60,7 @@ User
 | FrontendAgent (`agents/frontend_agent.py`) | ✅ Complete and tested |
 | QAAgent (`agents/qa_agent.py`) | ✅ Complete and tested |
 | DebugAgent (`agents/debug_agent.py`) | ✅ Complete and tested |
-| ReviewerAgent | ⬜ Not started |
+| ReviewerAgent (`agents/reviewer_agent.py`) | ✅ Complete and tested |
 | DevOpsAgent | ⬜ Not started |
 | DocumentationAgent | ⬜ Not started |
 | FinalProjectAgent | ⬜ Not started |
@@ -251,11 +251,30 @@ Seventh concrete pipeline agent, diagnosing failures, producing corrected code a
 
 **Status: Complete and tested** — Full test suite: **483 tests passed** (0 failures, 0 warnings).
 
+### ReviewerAgent (`agents/reviewer_agent.py`)
+
+Eighth concrete pipeline agent, performing holistic code review across code artifacts, test artifacts, test plans, and architecture specifications, per `design.md` Section 1.8 and Section 6.1.
+
+- `agents/reviewer_agent.py` — Inherits from `BaseAgent`; features internal retry loop for validation recovery without backoff sleep on schema/scope validation failure, and exponential backoff on unhandled exceptions; fast-fails on missing or empty requirements/architecture/code_artifacts; calls `StaticAnalysisTool` and `CoverageReportReader` outside the retry loop, routing exceptions directly to exhaustion without LLM regeneration; evaluates codebase and produces structured `ReviewReport` with version increments on re-review; handles all three outcomes:
+  - `approved`: sets `workflow_status="review_complete"`, `next_agent="DevOpsAgent"`, advances `forward_stage` to 7, sets `checkpoint_stage="review_complete"` with `checkpoints` timestamp, resets `retry_counts["ReviewerAgent"]=0`;
+  - `requires_changes`: sets `workflow_status="debug_required"`, `next_agent="DebugAgent"`, leaves `rejection_scope` unset (Req 21 crit 5), appends `ErrorRecord(error_type="other", message="review_requires_changes: ...")`, sets `current_debug_target=error_id`, resets `retry_counts["ReviewerAgent"]=0`;
+  - `rejected`: sets `workflow_status="escalation_required"`, `human_approval_required=True` with formatted notes, sets `rejection_scope` to one of `{"code_level", "design_level", "requirements_level"}`, sets `next_agent` via local mapping `REJECTION_SCOPE_MAP` (`code_level` -> `DebugAgent`, `design_level` -> `ArchitectAgent`, `requirements_level` -> `ProductManagerAgent`) without `workflows/` imports, resets `retry_counts["ReviewerAgent"]=0`; for `code_level` rejections, also appends `ErrorRecord` and sets `current_debug_target=error_id` so that DebugAgent has a target error upon human approval;
+- `tools/reviewer/static_analyzer.py` — `StaticAnalysisTool` Protocol, `StaticAnalysisReport` dataclass, and `FakeStaticAnalyzer` test double.
+- `tools/reviewer/coverage_reader.py` — `CoverageReportReader` Protocol, `CoverageReport` dataclass, and `FakeCoverageReader` test double.
+- `prompts/reviewer/` — Markdown prompt templates (`system_prompt.md`, `user_prompt_template.md`, `revision_prompt.md`) with automated metadata header stripping.
+- **Architectural & Design Notes**:
+  - **Decision 3**: ReviewerAgent omits writing `memory_references.organizational`.
+  - **Decision 2**: `pipeline_stage` ignored in favor of `forward_stage`.
+  - **Reviewer loop termination conditions**: Mapped verbatim from `workflow-design-revised.md` Section 3.6 to router precedence checks and node handlers; no deterministic override of LLM `overall_status` is permitted or implemented.
+- `tests/agents/test_reviewer_agent.py` & `tests/workflows/test_graph_reviewer.py` — 25 tests covering constructor validation, tool failure fast paths, scope validation inside LLM loop, all 3 outcomes, version bump on re-review, immutable input state, and real-graph integration (approved path, requires_changes loop with real DebugAgent, loop termination at global cap, rejected at each of 3 scopes with human approve/reject, invalid scope retry, and exhaustion approve/reject).
+
+**Status: Complete and tested** — Full test suite: **510 tests passed** (0 failures, 0 warnings).
+
 ---
 
 ## Next Phase
 
-**ReviewerAgent** (`agents/reviewer_agent.py`) — The eighth concrete pipeline agent, performing holistic code review across code artifacts, test artifacts, and architecture specifications, per `design.md` Section 1.8 and Section 6.1.
+**DevOpsAgent** (`agents/devops_agent.py`) — The ninth concrete pipeline agent, generating deployment artifacts (Dockerfile, CI/CD workflows, configuration) per `design.md` Section 1.9 and Section 6.1.
 
 ---
 
