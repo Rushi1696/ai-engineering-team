@@ -177,6 +177,7 @@ class DocumentationAgent(BaseAgent):
         last_error_message = ""
         last_error_type = "validation_failure"
         last_traceback = ""
+        last_artifacts_str = "None"
         attempt = 0
 
         # Build context strings for prompts
@@ -221,7 +222,9 @@ class DocumentationAgent(BaseAgent):
             deployment_artifacts=deploy_summary,
         )
 
+        existing_artifacts = state.get("documentation_artifacts") or {}
         doc_output: Optional[DocumentationOutput] = None
+        validated_artifacts: Dict[str, DocumentationArtifact] = {}
 
         # 3. LLM retry loop
         while attempt < remaining_attempts:
@@ -230,6 +233,7 @@ class DocumentationAgent(BaseAgent):
             else:
                 current_prompt = revision_prompt_template.format(
                     error_message=last_error_message,
+                    previous_artifacts=last_artifacts_str,
                     project_name=project_name,
                     requirements=reqs_str,
                     architecture=arch_str,
@@ -262,7 +266,56 @@ class DocumentationAgent(BaseAgent):
                     if not art.content or not art.content.strip():
                         raise ValueError(f"DocumentationAgent: Artifact content cannot be empty for {art.file_path}")
 
+                # Record previous artifacts for revision prompt in case linter fails
+                last_artifacts_str = "\n\n".join(
+                    f"--- {art.file_path} ({art.doc_type}) ---\n{art.content}"
+                    for art in candidate.artifacts
+                )
+
+                # Build candidate DocumentationArtifact objects for linter
+                timestamp = _now_iso()
+                candidate_artifacts: Dict[str, DocumentationArtifact] = {}
+                for draft in candidate.artifacts:
+                    existing = existing_artifacts.get(draft.file_path)
+                    existing_ver = getattr(existing, "version", 1) if existing else 1
+                    if existing_ver is None and isinstance(existing, dict):
+                        existing_ver = existing.get("version", 1)
+                    version = (existing_ver or 1) + 1 if existing else 1
+
+                    candidate_artifacts[draft.file_path] = DocumentationArtifact(
+                        file_path=draft.file_path,
+                        content=draft.content,
+                        doc_type=draft.doc_type,
+                        produced_by=self.agent_name,
+                        produced_at=timestamp,
+                        version=version,
+                    )
+
+                # Tool execution: a tool EXCEPTION bypasses LLM retry loop and goes straight to exhaustion
+                try:
+                    lint_report: LintReport = self.linter.lint_documentation(
+                        documentation_artifacts=candidate_artifacts
+                    )
+                except Exception as tool_exc:
+                    import traceback
+
+                    return self._build_exhaustion_return(
+                        state=state,
+                        started_at=started_at,
+                        error_type="unhandled_exception",
+                        error_message=f"Markdown linter tool exception: {tool_exc}",
+                        traceback_str=traceback.format_exc(),
+                        attempt_count=attempt,
+                    )
+
+                # Tool report failure: feeds LLM retry loop as a validation_failure
+                if not lint_report.passed:
+                    err_msg = "; ".join(lint_report.errors or ["Markdown linting failed"])
+                    raise ValueError(f"Markdown linting failed: {err_msg}")
+
+                # Success: valid output and report passed
                 doc_output = candidate
+                validated_artifacts = candidate_artifacts
                 break
 
             except Exception as exc:
@@ -295,62 +348,11 @@ class DocumentationAgent(BaseAgent):
             )
 
         completed_at = _now_iso()
-
-        # 5. Outside LLM retry loop: stamp produced_by, produced_at, and versioning
-        existing_artifacts = state.get("documentation_artifacts") or {}
-        updated_artifacts: Dict[str, DocumentationArtifact] = {}
-        for draft in doc_output.artifacts:
-            existing = existing_artifacts.get(draft.file_path)
-            existing_ver = getattr(existing, "version", 1) if existing else 1
-            if existing_ver is None and isinstance(existing, dict):
-                existing_ver = existing.get("version", 1)
-            version = (existing_ver or 1) + 1 if existing else 1
-
-            artifact = DocumentationArtifact(
-                file_path=draft.file_path,
-                content=draft.content,
-                doc_type=draft.doc_type,
-                produced_by=self.agent_name,
-                produced_at=completed_at,
-                version=version,
-            )
-            updated_artifacts[draft.file_path] = artifact
-
-        # 6. Outside LLM retry loop: execute markdown linter
-        # Tool exceptions route directly to exhaustion without LLM regeneration.
-        try:
-            lint_report: LintReport = self.linter.lint_documentation(
-                documentation_artifacts=updated_artifacts
-            )
-        except Exception as exc:
-            import traceback
-
-            return self._build_exhaustion_return(
-                state=state,
-                started_at=started_at,
-                error_type="unhandled_exception",
-                error_message=f"Markdown linter tool exception: {exc}",
-                traceback_str=traceback.format_exc(),
-                attempt_count=0,
-            )
-
-        # 7. Check linter report outcome
-        # Documentation has no debug route; a failed lint report exhausts to human approval
-        if not lint_report.passed:
-            return self._build_exhaustion_return(
-                state=state,
-                started_at=started_at,
-                error_type="validation_failure",
-                error_message=f"Markdown linting failed: {'; '.join(lint_report.errors or ['Lint errors detected'])}",
-                traceback_str="",
-                attempt_count=attempt + 1,
-            )
-
         duration = (
             datetime.fromisoformat(completed_at) - datetime.fromisoformat(started_at)
         ).total_seconds()
 
-        # 8. Success path
+        # 5. Success path
         current_forward_stage = state.get("forward_stage", 0)
         new_forward_stage = max(current_forward_stage, 9)
         updated_retry_counts = dict(state.get("retry_counts") or {})
@@ -368,7 +370,7 @@ class DocumentationAgent(BaseAgent):
         )
 
         return {
-            "documentation_artifacts": updated_artifacts,
+            "documentation_artifacts": validated_artifacts,
             "workflow_status": STATUS_DOCUMENTATION_COMPLETE,
             "current_agent": self.agent_name,
             "next_agent": "FinalProjectAgent",
@@ -442,3 +444,4 @@ class DocumentationAgent(BaseAgent):
             "state_version": state.get("state_version", 0) + 1,
             "updated_at": completed_at,
         }
+        

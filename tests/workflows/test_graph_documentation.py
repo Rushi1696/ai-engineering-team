@@ -346,19 +346,19 @@ def test_graph_documentation_exhaustion_approval_and_rejection():
 
 
 # ===========================================================================
-# 4. Linter Failure Exhausts to Human Approval (No Debug Route)
+# 4. Linter Report Failure -> Internal Retry -> Success & Exhaustion
 # ===========================================================================
 
 
-def test_graph_documentation_linter_failure_exhausts_to_human_approval():
-    """Markdown linter failure exhausts directly to HumanApprovalNode (no debug route); approved retry passes."""
+def test_graph_documentation_linter_report_failure_then_success_on_retry():
+    """Markdown linter failure feeds LLM retry loop; succeeds on retry and completes pipeline."""
     client = FakeLLMClient(
         responses=[
             _sample_documentation_output_dict(),
             _sample_documentation_output_dict(),
         ]
     )
-    # Pass 1: linter fails; Pass 2: linter passes
+    # Attempt 1: linter fails; Attempt 2: linter passes
     linter = FakeMarkdownLinter(
         results=[
             LintReport(passed=False, errors=["Heading level hierarchy broken in README.md"]),
@@ -369,6 +369,45 @@ def test_graph_documentation_linter_failure_exhausts_to_human_approval():
         model_name="test-model",
         llm_client=client,
         linter=linter,
+    )
+
+    agents = _build_pipeline_stubs()
+    agents[NODE_DOCUMENTATION] = doc_agent.invoke
+
+    graph = build_graph(agents, checkpointer=MemorySaver())
+    initial_state = create_initial_state(project_name="DocLinterRetryApp", user_input="Build app")
+    config = {"configurable": {"thread_id": "doc-linter-retry-thread"}}
+
+    final_state = graph.invoke(initial_state, config=config)
+
+    assert final_state["workflow_status"] == STATUS_COMPLETED
+    assert len(client.calls) == 2
+    assert "Heading level hierarchy broken in README.md" in client.calls[1]["prompt"]
+
+
+def test_graph_documentation_linter_failure_exhausts_to_human_approval():
+    """Markdown linter failure repeated exhausts directly to HumanApprovalNode; approved retry passes."""
+    client = FakeLLMClient(
+        responses=[
+            _sample_documentation_output_dict(),
+            _sample_documentation_output_dict(),
+            _sample_documentation_output_dict(),
+            # After human approval:
+            _sample_documentation_output_dict(),
+        ]
+    )
+    # 3 fails for initial run, 1 pass for resumed run
+    failing_report = LintReport(passed=False, errors=["Heading level hierarchy broken in README.md"])
+    passing_report = LintReport(passed=True)
+    linter = FakeMarkdownLinter(
+        results=[failing_report, failing_report, failing_report, passing_report]
+    )
+    doc_agent = DocumentationAgent(
+        model_name="test-model",
+        llm_client=client,
+        linter=linter,
+        max_retries=3,
+        sleep_fn=lambda s: None,
     )
 
     agents = _build_pipeline_stubs()
@@ -420,3 +459,4 @@ def test_graph_documentation_model_name_passthrough():
 
     assert len(client.calls) == 1
     assert client.calls[0]["model_name"] == "custom-doc-v1"
+

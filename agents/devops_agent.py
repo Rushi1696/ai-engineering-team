@@ -40,11 +40,7 @@ from tools.shared.llm_client import LLMClient
 
 # Local status constants (guarded to ensure membership in WORKFLOW_STATUS_VALUES)
 STATUS_DEVOPS_COMPLETE: str = "devops_complete"
-STATUS_DEBUG_REQUIRED: str = "debug_required"
-if (
-    STATUS_DEVOPS_COMPLETE not in WORKFLOW_STATUS_VALUES
-    or STATUS_DEBUG_REQUIRED not in WORKFLOW_STATUS_VALUES
-):
+if STATUS_DEVOPS_COMPLETE not in WORKFLOW_STATUS_VALUES:
     raise ImportError("Local status constant is not a valid workflow status")
 
 _DEFAULT_PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts" / "devops"
@@ -179,6 +175,7 @@ class DevOpsAgent(BaseAgent):
         last_error_message = ""
         last_error_type = "validation_failure"
         last_traceback = ""
+        last_artifacts_str = "None"
         attempt = 0
 
         # Build context strings for prompts
@@ -223,7 +220,9 @@ class DevOpsAgent(BaseAgent):
             code_artifacts=code_summary,
         )
 
+        existing_artifacts = state.get("deployment_artifacts") or {}
         devops_output: Optional[DevOpsOutput] = None
+        validated_artifacts: Dict[str, DeploymentArtifact] = {}
 
         # 3. LLM retry loop
         while attempt < remaining_attempts:
@@ -232,6 +231,7 @@ class DevOpsAgent(BaseAgent):
             else:
                 current_prompt = revision_prompt_template.format(
                     error_message=last_error_message,
+                    previous_artifacts=last_artifacts_str,
                     project_name=project_name,
                     architecture=arch_str,
                     code_artifacts=code_summary,
@@ -265,7 +265,56 @@ class DevOpsAgent(BaseAgent):
                     if not art.content or not art.content.strip():
                         raise ValueError(f"DevOpsAgent: Artifact content cannot be empty for {art.file_path}")
 
+                # Record previous artifacts for revision prompt in case validator fails
+                last_artifacts_str = "\n\n".join(
+                    f"--- {art.file_path} ({art.artifact_type}) ---\n{art.content}"
+                    for art in candidate.artifacts
+                )
+
+                # Build candidate DeploymentArtifact objects for validator
+                timestamp = _now_iso()
+                candidate_artifacts: Dict[str, DeploymentArtifact] = {}
+                for draft in candidate.artifacts:
+                    existing = existing_artifacts.get(draft.file_path)
+                    existing_ver = getattr(existing, "version", 1) if existing else 1
+                    if existing_ver is None and isinstance(existing, dict):
+                        existing_ver = existing.get("version", 1)
+                    version = (existing_ver or 1) + 1 if existing else 1
+
+                    candidate_artifacts[draft.file_path] = DeploymentArtifact(
+                        file_path=draft.file_path,
+                        content=draft.content,
+                        artifact_type=draft.artifact_type,
+                        produced_by=self.agent_name,
+                        produced_at=timestamp,
+                        version=version,
+                    )
+
+                # Tool execution: a tool EXCEPTION bypasses LLM retry loop and goes straight to exhaustion
+                try:
+                    validation_report: ValidationReport = self.validator.validate_configs(
+                        deployment_artifacts=candidate_artifacts
+                    )
+                except Exception as tool_exc:
+                    import traceback
+
+                    return self._build_exhaustion_return(
+                        state=state,
+                        started_at=started_at,
+                        error_type="unhandled_exception",
+                        error_message=f"Config validation tool exception: {tool_exc}",
+                        traceback_str=traceback.format_exc(),
+                        attempt_count=attempt,
+                    )
+
+                # Tool report failure: feeds LLM retry loop as a validation_failure
+                if not validation_report.valid:
+                    err_msg = "; ".join(validation_report.errors or ["Invalid configuration syntax"])
+                    raise ValueError(f"Configuration validation failed: {err_msg}")
+
+                # Success: valid output and report passed
                 devops_output = candidate
+                validated_artifacts = candidate_artifacts
                 break
 
             except Exception as exc:
@@ -298,97 +347,11 @@ class DevOpsAgent(BaseAgent):
             )
 
         completed_at = _now_iso()
-
-        # 5. Outside LLM retry loop: stamp produced_by, produced_at, and versioning
-        existing_artifacts = state.get("deployment_artifacts") or {}
-        updated_artifacts: Dict[str, DeploymentArtifact] = {}
-        for draft in devops_output.artifacts:
-            existing = existing_artifacts.get(draft.file_path)
-            existing_ver = getattr(existing, "version", 1) if existing else 1
-            if existing_ver is None and isinstance(existing, dict):
-                existing_ver = existing.get("version", 1)
-            version = (existing_ver or 1) + 1 if existing else 1
-
-            artifact = DeploymentArtifact(
-                file_path=draft.file_path,
-                content=draft.content,
-                artifact_type=draft.artifact_type,
-                produced_by=self.agent_name,
-                produced_at=completed_at,
-                version=version,
-            )
-            updated_artifacts[draft.file_path] = artifact
-
-        # 6. Outside LLM retry loop: execute configuration validator
-        # Tool exceptions route directly to exhaustion without LLM regeneration.
-        try:
-            validation_report: ValidationReport = self.validator.validate_configs(
-                deployment_artifacts=updated_artifacts
-            )
-        except Exception as exc:
-            import traceback
-
-            return self._build_exhaustion_return(
-                state=state,
-                started_at=started_at,
-                error_type="unhandled_exception",
-                error_message=f"Config validation tool exception: {exc}",
-                traceback_str=traceback.format_exc(),
-                attempt_count=0,
-            )
-
         duration = (
             datetime.fromisoformat(completed_at) - datetime.fromisoformat(started_at)
         ).total_seconds()
 
-        # 7. Check validator report outcome
-        if not validation_report.valid:
-            # Failure that needs debugging: routes to DebugAgent
-            err_id = str(uuid.uuid4())
-            err_msg = (
-                f"devops_config_failure: Configuration syntax validation failed: "
-                f"{'; '.join(validation_report.errors or ['Invalid config syntax'])}"
-            )[:2000]
-
-            error_record = ErrorRecord(
-                error_id=err_id,
-                agent=self.agent_name,
-                stage=STATUS_DEBUG_REQUIRED,
-                error_type="other",
-                message=err_msg,
-                occurred_at=completed_at,
-                resolved=False,
-            )
-
-            updated_retry_counts = dict(state.get("retry_counts") or {})
-            updated_retry_counts[self.agent_name] = 0
-
-            metadata = AgentExecutionMetadata(
-                agent_name=self.agent_name,
-                started_at=started_at,
-                completed_at=completed_at,
-                duration_seconds=duration,
-                tokens_used=0,
-                model_calls=attempt + 1,
-                status="failed",
-                notes=err_msg,
-            )
-
-            return {
-                "deployment_artifacts": updated_artifacts,
-                "workflow_status": STATUS_DEBUG_REQUIRED,
-                "current_agent": self.agent_name,
-                "next_agent": "DebugAgent",
-                "errors": [error_record],
-                "current_debug_target": err_id,
-                "retry_counts": updated_retry_counts,
-                "execution_metadata": {self.agent_name: metadata},
-                "agent_scratchpad": {self.agent_name: f"DevOps validation failed: {err_msg}"},
-                "state_version": state.get("state_version", 0) + 1,
-                "updated_at": completed_at,
-            }
-
-        # 8. Success path
+        # 5. Success path
         current_forward_stage = state.get("forward_stage", 0)
         new_forward_stage = max(current_forward_stage, 8)
         updated_retry_counts = dict(state.get("retry_counts") or {})
@@ -406,7 +369,7 @@ class DevOpsAgent(BaseAgent):
         )
 
         return {
-            "deployment_artifacts": updated_artifacts,
+            "deployment_artifacts": validated_artifacts,
             "workflow_status": STATUS_DEVOPS_COMPLETE,
             "current_agent": self.agent_name,
             "next_agent": "DocumentationAgent",

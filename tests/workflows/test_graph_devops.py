@@ -273,19 +273,19 @@ def test_graph_devops_transient_failure_then_success():
 
 
 # ===========================================================================
-# 3. Validation Failure -> Real DebugAgent Loop -> Success
+# 3. Validator Report Failure -> Retry -> Success
 # ===========================================================================
 
 
-def test_graph_devops_failure_routes_to_real_debug_agent_loop():
-    """DevOps syntax failure routes to DebugAgent; DebugAgent resolves and routes back to DevOps."""
+def test_graph_devops_validator_report_failure_then_success_on_retry():
+    """DevOps syntax failure feeds LLM retry loop; succeeds on retry and completes pipeline."""
     devops_client = FakeLLMClient(
         responses=[
             _sample_devops_output_dict(),
             _sample_devops_output_dict(),
         ]
     )
-    # Validator fails on pass 1, passes on pass 2
+    # Validator fails on attempt 1, passes on attempt 2
     validator = FakeConfigValidator(
         results=[
             ValidationReport(valid=False, errors=["YAML syntax error in ci.yml"]),
@@ -298,27 +298,19 @@ def test_graph_devops_failure_routes_to_real_debug_agent_loop():
         validator=validator,
     )
 
-    debug_client = FakeLLMClient(responses=[_sample_debug_resolution_dict("DevOpsAgent")])
-    debug_agent = DebugAgent(
-        model_name="test-model",
-        llm_client=debug_client,
-        sandbox=FakeExecutionSandbox(),
-    )
-
     agents = _build_pipeline_stubs()
     agents[NODE_DEVOPS] = devops_agent.invoke
-    agents[NODE_DEBUG] = debug_agent.invoke
 
     graph = build_graph(agents, checkpointer=MemorySaver())
-    initial_state = create_initial_state(project_name="DevOpsDebugLoopApp", user_input="Build app")
-    config = {"configurable": {"thread_id": "devops-debug-loop-thread"}}
+    initial_state = create_initial_state(project_name="DevOpsRetryApp", user_input="Build app")
+    config = {"configurable": {"thread_id": "devops-retry-thread"}}
 
     final_state = graph.invoke(initial_state, config=config)
 
     assert final_state["workflow_status"] == STATUS_COMPLETED
-    assert final_state["total_debug_cycles"] == 1
-    assert final_state["current_debug_target"] == ""
-    assert unresolved_errors(final_state["errors"]) == []
+    assert len(devops_client.calls) == 2
+    # Verify retry prompt included the validator error
+    assert "YAML syntax error in ci.yml" in devops_client.calls[1]["prompt"]
 
 
 # ===========================================================================

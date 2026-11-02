@@ -9,7 +9,6 @@ from typing import Any, Dict, List, Optional
 import pytest
 
 from agents.devops_agent import (
-    STATUS_DEBUG_REQUIRED,
     STATUS_DEVOPS_COMPLETE,
     DevOpsAgent,
     DevOpsOutput,
@@ -329,43 +328,82 @@ def test_devops_re_run_bumps_version():
 
 
 # ===========================================================================
-# 6. Syntax Validation Failure Routes to DebugAgent
+# 6. Syntax Validation Report Failure Feeds LLM Retry Loop
 # ===========================================================================
 
 
-def test_validation_failure_routes_to_debug_agent():
-    """When config validation fails, DevOpsAgent routes to DebugAgent with ErrorRecord and debug_target."""
-    client = FakeLLMClient(responses=[_sample_devops_output_dict()])
+def test_validator_report_failure_then_success_on_retry():
+    """When config validation fails, DevOpsAgent retries via LLM revision prompt with errors and succeeds."""
+    sleep_calls = []
+    client = FakeLLMClient(
+        responses=[
+            _sample_devops_output_dict(),
+            _sample_devops_output_dict(),
+        ]
+    )
     validator = FakeConfigValidator(
         results=[
             ValidationReport(
                 valid=False,
                 errors=["YAML syntax error at line 5: unexpected indent in ci.yml"],
-            )
+            ),
+            ValidationReport(valid=True),
         ]
     )
     agent = DevOpsAgent(
         model_name="test-model",
         llm_client=client,
         validator=validator,
+        sleep_fn=sleep_calls.append,
     )
 
     state = _build_test_state()
     result = agent.execute(state)
 
-    assert result["workflow_status"] == STATUS_DEBUG_REQUIRED
-    assert result["next_agent"] == "DebugAgent"
-    assert result["current_agent"] == "DevOpsAgent"
-    assert result["retry_counts"]["DevOpsAgent"] == 0
+    assert result["workflow_status"] == STATUS_DEVOPS_COMPLETE
+    assert result["next_agent"] == "DocumentationAgent"
+    assert len(client.calls) == 2
+    assert len(sleep_calls) == 0  # No backoff on validation errors
 
-    assert len(result["errors"]) == 1
-    err = result["errors"][0]
-    assert err.error_type == "other"
-    assert err.agent == "DevOpsAgent"
-    assert err.stage == STATUS_DEBUG_REQUIRED
-    assert "devops_config_failure:" in err.message
-    assert "unexpected indent in ci.yml" in err.message
-    assert result["current_debug_target"] == err.error_id
+    # Verify attempt 2 received the validator error and previous artifacts
+    attempt_2_prompt = client.calls[1]["prompt"]
+    assert "unexpected indent in ci.yml" in attempt_2_prompt
+    assert "Dockerfile" in attempt_2_prompt
+
+
+def test_validator_report_failure_exhausts_to_human_approval():
+    """Repeated config validation failures exhaust to standard human approval (no debug_required)."""
+    client = FakeLLMClient(
+        responses=[
+            _sample_devops_output_dict(),
+            _sample_devops_output_dict(),
+            _sample_devops_output_dict(),
+        ]
+    )
+    validator = FakeConfigValidator(
+        results=[
+            ValidationReport(valid=False, errors=["YAML syntax error: line 1"]),
+            ValidationReport(valid=False, errors=["YAML syntax error: line 2"]),
+            ValidationReport(valid=False, errors=["YAML syntax error: line 3"]),
+        ]
+    )
+    agent = DevOpsAgent(
+        model_name="test-model",
+        llm_client=client,
+        validator=validator,
+        max_retries=3,
+        sleep_fn=lambda s: None,
+    )
+
+    state = _build_test_state()
+    result = agent.execute(state)
+
+    assert result["human_approval_required"] is True
+    assert result["next_agent"] == "DevOpsAgent"
+    assert "workflow_status" not in result  # Preserved unchanged
+    assert result["errors"][0].error_type == "retry_exhausted"
+    assert "YAML syntax error: line 3" in result["errors"][0].message
+    assert len(client.calls) == 3
 
 
 # ===========================================================================
@@ -389,3 +427,4 @@ def test_input_state_unchanged_after_execute():
     _ = agent.execute(state)
 
     assert state == state_before
+

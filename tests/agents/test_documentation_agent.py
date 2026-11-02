@@ -221,24 +221,70 @@ def test_linter_tool_exception_routes_directly_to_exhaustion():
 
 
 # ===========================================================================
-# 4. Linter Failure Handling (No Debug Route)
+# 4. Linter Report Failure Feeds LLM Retry Loop
 # ===========================================================================
 
 
-def test_linter_failure_exhausts_to_human_approval():
-    """Documentation has no debug route; a failed lint report exhausts to human approval."""
-    client = FakeLLMClient(responses=[_sample_documentation_output_dict()])
+def test_linter_report_failure_then_success_on_retry():
+    """A failed lint report feeds the retry loop; LLM receives errors in revision prompt and succeeds."""
+    sleep_calls: List[float] = []
+    client = FakeLLMClient(
+        responses=[
+            _sample_documentation_output_dict(),
+            _sample_documentation_output_dict(),
+        ]
+    )
     failing_report = LintReport(
         passed=False,
         errors=["Broken relative link in docs/architecture.md"],
         warnings=["Heading level 3 skipped in README.md"],
     )
-    linter = FakeMarkdownLinter(results=[failing_report])
+    passing_report = LintReport(passed=True)
+    linter = FakeMarkdownLinter(results=[failing_report, passing_report])
 
     agent = DocumentationAgent(
         model_name="test-model",
         llm_client=client,
         linter=linter,
+        sleep_fn=sleep_calls.append,
+    )
+    state = _build_test_state()
+
+    result = agent.execute(state)
+    assert result["workflow_status"] == STATUS_DOCUMENTATION_COMPLETE
+    assert result["next_agent"] == "FinalProjectAgent"
+    assert len(client.calls) == 2
+    assert len(sleep_calls) == 0  # No backoff sleep on lint validation error
+
+    # Verify attempt 2 received the lint error and previous artifacts
+    attempt_2_prompt = client.calls[1]["prompt"]
+    assert "Broken relative link in docs/architecture.md" in attempt_2_prompt
+    assert "README.md" in attempt_2_prompt
+
+
+def test_linter_failure_exhausts_to_human_approval():
+    """Repeated lint failures exhaust to human approval without changing workflow_status."""
+    client = FakeLLMClient(
+        responses=[
+            _sample_documentation_output_dict(),
+            _sample_documentation_output_dict(),
+            _sample_documentation_output_dict(),
+        ]
+    )
+    failing_report = LintReport(
+        passed=False,
+        errors=["Broken relative link in docs/architecture.md"],
+    )
+    linter = FakeMarkdownLinter(
+        results=[failing_report, failing_report, failing_report]
+    )
+
+    agent = DocumentationAgent(
+        model_name="test-model",
+        llm_client=client,
+        linter=linter,
+        max_retries=3,
+        sleep_fn=lambda s: None,
     )
     state = _build_test_state()
 
@@ -247,6 +293,7 @@ def test_linter_failure_exhausts_to_human_approval():
     assert result["next_agent"] == "DocumentationAgent"
     assert "workflow_status" not in result  # Preserved unchanged
     assert "Markdown linting failed" in result["errors"][0].message
+    assert len(client.calls) == 3
 
 
 # ===========================================================================
