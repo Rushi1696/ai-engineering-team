@@ -61,8 +61,8 @@ User
 | QAAgent (`agents/qa_agent.py`) | ✅ Complete and tested |
 | DebugAgent (`agents/debug_agent.py`) | ✅ Complete and tested |
 | ReviewerAgent (`agents/reviewer_agent.py`) | ✅ Complete and tested |
-| DevOpsAgent | ⬜ Not started |
-| DocumentationAgent | ⬜ Not started |
+| DevOpsAgent (`agents/devops_agent.py`) | ✅ Complete and tested |
+| DocumentationAgent (`agents/documentation_agent.py`) | ✅ Complete and tested |
 | FinalProjectAgent | ⬜ Not started |
 
 ---
@@ -270,11 +270,37 @@ Eighth concrete pipeline agent, performing holistic code review across code arti
 
 **Status: Complete and tested** — Full test suite: **510 tests passed** (0 failures, 0 warnings).
 
+### DevOpsAgent (`agents/devops_agent.py`)
+
+Ninth concrete pipeline agent, generating deployment configurations (Dockerfile, CI/CD workflows, configuration artifacts) and validating configuration syntax, per `design.md` Section 1.9 and Section 6.1.
+
+- `agents/devops_agent.py` — Inherits from `BaseAgent`; features internal retry loop for validation recovery without backoff sleep on schema validation failure, and exponential backoff on unhandled exceptions; fast-fails on missing or empty requirements/architecture/code_artifacts; calls `ConfigValidator` outside the retry loop, routing tool exceptions directly to exhaustion without LLM regeneration; checks validator results:
+  - On validation pass: stamps `produced_by="DevOpsAgent"`, `produced_at`, and incremental versioning; sets `workflow_status="devops_complete"`, `next_agent="DocumentationAgent"`, advances `forward_stage` to 8, sets `checkpoint_stage="devops_complete"` with `checkpoints` timestamp, resets `retry_counts["DevOpsAgent"]=0`;
+  - On validation failure: appends `ErrorRecord(error_type="other", message="devops_config_failure: ...")` truncated to 2000 chars, sets `current_debug_target=error_id`, sets `workflow_status="debug_required"`, `next_agent="DebugAgent"`, resets `retry_counts["DevOpsAgent"]=0`;
+  - On exhaustion: returns `human_approval_required=True`, `next_agent="DevOpsAgent"`, sets retry count to ceiling, leaves `workflow_status` unchanged.
+- `tools/devops/yaml_validator.py` — `ConfigValidator` Protocol, `ValidationReport` dataclass, and `FakeConfigValidator` test double.
+- `prompts/devops/` — Markdown prompt templates (`system_prompt.md`, `user_prompt_template.md`, `revision_prompt.md`) with automated metadata header stripping.
+- `tests/agents/test_devops_agent.py` & `tests/workflows/test_graph_devops.py` — 15 tests covering constructor validation, tool failure routing directly to exhaustion, validation recovery without sleep, backoff on unhandled exceptions, success path and version bump on re-run, input state immutability, and real-graph integration (happy path, transient failure recovery, syntax failure -> real DebugAgent loop -> success, exhaustion approve/reject, and model_name passthrough).
+
+### DocumentationAgent (`agents/documentation_agent.py`)
+
+Tenth concrete pipeline agent, generating complete project documentation (README, onboarding guide, architecture docs, API reference, deployment guide) and validating markdown structure and links, per `design.md` Section 1.10 and Section 6.1.
+
+- `agents/documentation_agent.py` — Inherits from `BaseAgent`; features internal retry loop for validation recovery without backoff sleep on schema validation failure, and exponential backoff on unhandled exceptions; fast-fails on missing or empty requirements/architecture; requires at minimum `readme`, `architecture`, `api_reference`, and `deployment_guide` doc types; stamps `produced_by="DocumentationAgent"`, `produced_at`, and incremental versioning; calls `MarkdownLinter` outside the retry loop, routing tool exceptions directly to exhaustion without LLM regeneration; checks linter report:
+  - On lint pass: sets `workflow_status="documentation_complete"`, `next_agent="FinalProjectAgent"`, advances `forward_stage` to 9, sets `checkpoint_stage="documentation_complete"` with `checkpoints` timestamp, resets `retry_counts["DocumentationAgent"]=0`;
+  - On lint failure: has no debug route per design; exhausts directly to human approval (`human_approval_required=True`), preserving `workflow_status`;
+  - On exhaustion: returns `human_approval_required=True`, `next_agent="DocumentationAgent"`, sets retry count to ceiling, leaves `workflow_status` unchanged.
+- `tools/documentation/markdown_linter.py` — `MarkdownLinter` Protocol, `LintReport` dataclass, and `FakeMarkdownLinter` test double.
+- `prompts/documentation/` — Markdown prompt templates (`system_prompt.md`, `user_prompt_template.md`, `revision_prompt.md`) with automated metadata header stripping.
+- `tests/agents/test_documentation_agent.py` & `tests/workflows/test_graph_documentation.py` — 15 tests covering constructor validation, tool failure routing directly to exhaustion, validation recovery without sleep, backoff on unhandled exceptions, linter failure exhaustion, success path and version bump on re-run, input state immutability, and real-graph integration (happy path, transient failure recovery, exhaustion approve/reject, linter failure exhaustion to human approval, and model_name passthrough).
+
+**Status: Complete and tested** — Full test suite: **541 tests passed** (0 failures, 0 warnings).
+
 ---
 
 ## Next Phase
 
-**DevOpsAgent** (`agents/devops_agent.py`) — The ninth concrete pipeline agent, generating deployment artifacts (Dockerfile, CI/CD workflows, configuration) per `design.md` Section 1.9 and Section 6.1.
+**FinalProjectAgent** (`agents/final_project_agent.py`) — The eleventh and final pipeline agent, assembling the complete project bundle, verifying final deliverables, producing `FinalProjectOutput`, and completing the workflow per `design.md` Section 1.11 and Section 6.1.
 
 ---
 

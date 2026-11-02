@@ -340,6 +340,7 @@ class ReviewerAgent(BaseAgent):
                     prompt=current_prompt,
                     system_prompt=system_prompt,
                     response_model=ReviewerOutput,
+                    model_name=self.model_name,
                 )
 
                 # Decision 6: Validate inside LLM retry loop:

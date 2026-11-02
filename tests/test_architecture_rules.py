@@ -123,3 +123,49 @@ def test_agent_status_constants_are_valid_workflow_statuses():
     assert "agents.task_planner_agent.STATUS_PLANNING_COMPLETE" in checked_constants
     assert "agents.backend_agent.STATUS_BACKEND_COMPLETE" in checked_constants
     assert "agents.frontend_agent.STATUS_FRONTEND_COMPLETE" in checked_constants
+
+
+def test_agents_pass_model_name_to_generate_structured():
+    """Assert every agents/*_agent.py that calls generate_structured passes model_name=self.model_name."""
+    agent_files = _get_agent_python_files()
+    assert len(agent_files) > 0
+
+    violations = []
+    checked_calls = 0
+
+    for file_path in agent_files:
+        tree = ast.parse(file_path.read_text(encoding="utf-8"), filename=str(file_path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                func = node.func
+                is_gen_struct = False
+                if isinstance(func, ast.Attribute) and func.attr == "generate_structured":
+                    is_gen_struct = True
+                elif isinstance(func, ast.Name) and func.id == "generate_structured":
+                    is_gen_struct = True
+
+                if is_gen_struct:
+                    checked_calls += 1
+                    passed_correctly = False
+                    for kw in node.keywords:
+                        if kw.arg == "model_name":
+                            val = kw.value
+                            if (
+                                isinstance(val, ast.Attribute)
+                                and isinstance(val.value, ast.Name)
+                                and val.value.id == "self"
+                                and val.attr == "model_name"
+                            ):
+                                passed_correctly = True
+                                break
+                    if not passed_correctly:
+                        violations.append(
+                            f"{file_path.name}:{node.lineno} calls generate_structured without model_name=self.model_name"
+                        )
+
+    assert not violations, (
+        f"Found generate_structured calls not passing model_name=self.model_name:\n"
+        + "\n".join(violations)
+    )
+    assert checked_calls >= 8, f"Expected at least 8 generate_structured calls across agents, found {checked_calls}"
+
