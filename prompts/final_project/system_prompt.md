@@ -14,3 +14,4 @@ Responsibilities:
    - Quality, test coverage, and code review status.
    - Deployment readiness and documentation overview.
 3. Return a structured JSON response matching the FinalProjectSummary model.
+

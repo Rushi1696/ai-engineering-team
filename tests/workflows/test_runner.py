@@ -35,7 +35,7 @@ from workflows.constants import (
     STATUS_REQUIREMENTS_COMPLETE,
     STATUS_REVIEW_COMPLETE,
 )
-from workflows.runner import cli_prompt_approval, run_pipeline
+from workflows.runner import PipelineIncompleteError, cli_prompt_approval, run_pipeline
 
 
 def _make_dummy_agent(node_name: str, update: dict):
@@ -242,5 +242,27 @@ def test_run_pipeline_rejects_empty_user_input(empty_input):
             user_input=empty_input,
             agents=agents,
         )
+
+
+def test_run_pipeline_raises_pipeline_incomplete_error():
+    """run_pipeline raises PipelineIncompleteError if graph terminates with status other than completed/failed."""
+    agents = _build_happy_agents()
+    agents[NODE_FINAL_PROJECT] = _make_dummy_agent(
+        NODE_FINAL_PROJECT,
+        {
+            "workflow_status": "in_progress",
+            "human_approval_required": False,
+            "human_approval_notes": "Pending manual sign-off",
+        },
+    )
+
+    with pytest.raises(PipelineIncompleteError, match="Pipeline terminated with incomplete workflow_status 'in_progress'") as exc_info:
+        run_pipeline(
+            project_name="IncompleteApp",
+            user_input="Build app",
+            agents=agents,
+        )
+
+    assert "Pending manual sign-off" in str(exc_info.value)
 
 

@@ -248,7 +248,7 @@ def test_packager_path_safety_guard_rejects_absolute_paths_and_dotdot():
 
 
 def test_packager_detects_unsafe_artifact_paths_and_exhausts():
-    """Unsafe artifact paths passed to execute route to tool exception exhaustion."""
+    """Unsafe artifact paths passed to execute trigger validation_failure exhaustion before LLM call."""
     client = FakeLLMClient(responses=[{"summary": "Executive summary"}])
     packager = FakeProjectPackager()
     agent = FinalProjectAgent(
@@ -271,9 +271,47 @@ def test_packager_detects_unsafe_artifact_paths_and_exhausts():
     result = agent.execute(state)
     assert result["human_approval_required"] is True
     assert result["next_agent"] == "FinalProjectAgent"
-    assert "Project packager tool exception" in result["errors"][0].message
-    assert "Insecure path detected" in result["errors"][0].message
+    assert result["errors"][0].error_type == "validation_failure"
+    assert "Insecure or invalid artifact path" in result["errors"][0].message
     assert len(client.calls) == 0  # No LLM tokens spent on unsafe paths
+
+
+def test_packager_detects_duplicate_paths_across_categories_and_exhausts():
+    """Duplicate file paths across artifact categories trigger validation_failure exhaustion before LLM call."""
+    client = FakeLLMClient(responses=[{"summary": "Executive summary"}])
+    packager = FakeProjectPackager()
+    agent = FinalProjectAgent(
+        model_name="test-model",
+        llm_client=client,
+        packager=packager,
+    )
+    state = _build_test_state()
+    # Inject identical path in both code_artifacts and documentation_artifacts
+    state["code_artifacts"]["docs/guide.md"] = CodeArtifact(
+        file_path="docs/guide.md",
+        language="python",
+        content="code",
+        artifact_type="backend",
+        produced_by="BackendAgent",
+        produced_at="2026-01-01T00:00:00Z",
+        version=1,
+    )
+    state["documentation_artifacts"]["docs/guide.md"] = DocumentationArtifact(
+        file_path="docs/guide.md",
+        content="# Guide",
+        doc_type="architecture",
+        produced_by="DocumentationAgent",
+        produced_at="2026-01-01T00:00:00Z",
+        version=1,
+    )
+
+    result = agent.execute(state)
+    assert result["human_approval_required"] is True
+    assert result["next_agent"] == "FinalProjectAgent"
+    assert result["errors"][0].error_type == "validation_failure"
+    assert "Duplicate artifact paths detected across categories" in result["errors"][0].message
+    assert "'docs/guide.md'" in result["errors"][0].message
+    assert len(client.calls) == 0  # No LLM tokens spent on duplicate paths
 
 
 # ===========================================================================
@@ -438,3 +476,4 @@ def test_input_state_unchanged_after_execute():
     _ = agent.execute(state)
 
     assert state == state_before
+

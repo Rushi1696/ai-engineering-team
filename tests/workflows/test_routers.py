@@ -48,6 +48,7 @@ from workflows.routers import (
     router_after_debug,
     router_after_devops,
     router_after_documentation,
+    router_after_final_project,
     router_after_frontend,
     router_after_human_approval,
     router_after_product_manager,
@@ -405,3 +406,32 @@ def test_state_immutability():
     original_copy = dict(state)
     router_after_product_manager(state)
     assert state == original_copy
+
+
+def test_router_after_final_project_success():
+    """router_after_final_project routes to END when human approval is not required."""
+    state: Dict[str, Any] = {
+        "workflow_status": "completed",
+        "human_approval_required": False,
+    }
+    assert router_after_final_project(state) == END
+
+
+def test_router_after_final_project_human_approval_required():
+    """router_after_final_project routes to NODE_HUMAN_APPROVAL on exhaustion/escalation."""
+    state: Dict[str, Any] = {
+        "workflow_status": "packaging_complete",
+        "human_approval_required": True,
+        "next_agent": "FinalProjectAgent",
+    }
+    assert router_after_final_project(state) == NODE_HUMAN_APPROVAL
+
+
+def test_router_after_final_project_ignores_expired_deadline():
+    """router_after_final_project must NOT fail a finished run due to late deadline."""
+    state: Dict[str, Any] = {
+        "workflow_status": "completed",
+        "human_approval_required": False,
+        "pipeline_deadline_at": "2020-01-01T00:00:00Z",
+    }
+    assert router_after_final_project(state) == END

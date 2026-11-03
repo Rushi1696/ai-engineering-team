@@ -233,6 +233,13 @@ class BaseAgent(ABC):
 
         return self._build_success_update(state, started_at, subclass_update)
 
+    def __call__(self, state: EngineeringState) -> Dict[str, Any]:
+        """Callable interface delegating directly to self.invoke(state).
+
+        Allows agent instances to be passed directly as LangGraph node callables.
+        """
+        return self.invoke(state)
+
     # ------------------------------------------------------------------
     # Execution metadata helpers (Requirement 14)
     # ------------------------------------------------------------------

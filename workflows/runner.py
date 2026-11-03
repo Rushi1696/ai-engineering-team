@@ -20,9 +20,17 @@ from state.engineering_state import EngineeringState, create_initial_state
 from workflows.constants import (
     APPROVAL_DECISION_APPROVED,
     APPROVAL_DECISION_REJECTED,
+    STATUS_COMPLETED,
+    STATUS_FAILED,
 )
 from workflows.graph import build_graph
 from workflows.routers import parse_iso_utc
+
+
+class PipelineIncompleteError(RuntimeError):
+    """Raised when pipeline terminates in an incomplete status (neither completed nor failed)."""
+
+    pass
 
 
 def cli_prompt_approval(interrupt_payload: Dict[str, Any]) -> Dict[str, str]:
@@ -147,10 +155,19 @@ def run_pipeline(
             pass
 
     final_snapshot = graph.get_state(config)
-    return final_snapshot.values
+    final_state = final_snapshot.values
+    final_status = final_state.get("workflow_status")
+    if final_status not in (STATUS_COMPLETED, STATUS_FAILED):
+        notes = final_state.get("human_approval_notes") or ""
+        raise PipelineIncompleteError(
+            f"Pipeline terminated with incomplete workflow_status '{final_status}'. "
+            f"human_approval_notes: {notes}"
+        )
+    return final_state
 
 
 __all__ = [
+    "PipelineIncompleteError",
     "cli_prompt_approval",
     "run_pipeline",
 ]

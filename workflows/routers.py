@@ -315,6 +315,19 @@ def router_after_human_approval(state: EngineeringState) -> str:
     )
 
 
+def router_after_final_project(state: EngineeringState) -> str:
+    """Route execution after FinalProjectAgent completes.
+
+    If human_approval_required is True (e.g. packaging/manifest failure exhausted to human approval),
+    routes to NODE_HUMAN_APPROVAL. Otherwise routes to END.
+    Explicitly does NOT use _check_common_precedence so a late pipeline deadline does not fail
+    a finished run.
+    """
+    if state.get("human_approval_required") is True:
+        return NODE_HUMAN_APPROVAL
+    return END
+
+
 __all__ = [
     "parse_iso_utc",
     "router_after_product_manager",
@@ -327,5 +340,6 @@ __all__ = [
     "router_after_devops",
     "router_after_documentation",
     "router_after_debug",
+    "router_after_final_project",
     "router_after_human_approval",
 ]

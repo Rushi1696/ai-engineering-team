@@ -27,16 +27,8 @@ from agents.base_agent import BaseAgent, DEFAULT_MAX_RETRIES, strip_metadata_hea
 from state.engineering_state import EngineeringState
 from state.models import (
     AgentExecutionMetadata,
-    CodeArtifact,
-    DeploymentArtifact,
-    DocumentationArtifact,
     ErrorRecord,
     FinalProjectOutput,
-    ProductRequirements,
-    ReviewReport,
-    SystemArchitecture,
-    TestArtifact,
-    TestPlan,
 )
 from state.validators import WORKFLOW_STATUS_VALUES
 from tools.final_project.packager import PackageReport, ProjectPackager, validate_safe_path
@@ -147,7 +139,49 @@ class FinalProjectAgent(BaseAgent):
         documentation_paths = sorted(list(documentation_artifacts.keys()))
         total_files = len(code_paths) + len(test_paths) + len(deployment_paths) + len(documentation_paths)
 
-        # 3. Path safety check & project packaging tool execution OUTSIDE LLM loop
+        # 3. Path safety check & cross-category duplicate detection OUTSIDE LLM loop
+        # Validate path safety on every artifact path before packaging
+        category_map = [
+            ("code_artifacts", code_artifacts),
+            ("test_artifacts", test_artifacts),
+            ("deployment_artifacts", deployment_artifacts),
+            ("documentation_artifacts", documentation_artifacts),
+        ]
+        for cat_name, artifact_dict in category_map:
+            for path_key in artifact_dict.keys():
+                try:
+                    validate_safe_path(path_key)
+                except Exception as exc:
+                    return self._build_exhaustion_return(
+                        state=state,
+                        started_at=started_at,
+                        error_type="validation_failure",
+                        error_message=f"Insecure or invalid artifact path '{path_key}' in {cat_name}: {exc}",
+                        traceback_str="",
+                        attempt_count=0,
+                    )
+
+        # Detect paths duplicated across categories
+        seen_paths: Dict[str, str] = {}
+        duplicates: List[str] = []
+        for cat_name, artifact_dict in category_map:
+            for path_key in sorted(artifact_dict.keys()):
+                if path_key in seen_paths:
+                    duplicates.append(f"'{path_key}' found in both {seen_paths[path_key]} and {cat_name}")
+                else:
+                    seen_paths[path_key] = cat_name
+
+        if duplicates:
+            return self._build_exhaustion_return(
+                state=state,
+                started_at=started_at,
+                error_type="validation_failure",
+                error_message=f"Duplicate artifact paths detected across categories: {'; '.join(duplicates)}",
+                traceback_str="",
+                attempt_count=0,
+            )
+
+        # Project packaging tool execution OUTSIDE LLM loop
         # A tool exception goes straight to exhaustion without LLM regeneration
         all_artifacts: Dict[str, Any] = {}
         all_artifacts.update(code_artifacts)
@@ -388,7 +422,7 @@ class FinalProjectAgent(BaseAgent):
             error_id=str(uuid.uuid4()),
             agent=self.agent_name,
             stage=str(state.get("workflow_status") or "final_project_exhaustion"),
-            error_type="retry_exhausted",
+            error_type=error_type,
             message=error_message,
             traceback=traceback_str,
             occurred_at=completed_at,
@@ -423,3 +457,4 @@ class FinalProjectAgent(BaseAgent):
             "state_version": state.get("state_version", 0) + 1,
             "updated_at": completed_at,
         }
+

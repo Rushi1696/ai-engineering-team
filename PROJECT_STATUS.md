@@ -294,18 +294,27 @@ Tenth concrete pipeline agent, generating complete project documentation (README
 Eleventh and final pipeline agent, consolidating all deliverables, packaging project artifacts, verifying file enumeration invariant, and producing `FinalProjectOutput`, per `design.md` Section 1.11 and Section 6.1.
 
 - `agents/final_project_agent.py` — Inherits from `BaseAgent`; features internal retry loop for summary generation recovery; fast-fails if retry ceiling is reached; calls `ProjectPackager` outside the retry loop with path-safety enforcement rejecting absolute paths and traversal segments; tool exceptions route directly to exhaustion without LLM regeneration; determines `overall_review_status` from `review_report`; computes `pipeline_duration_seconds`; writes `final_output` (Pydantic model enforcing `total_files_generated == len(code) + len(test) + len(deploy) + len(doc)`); sets `workflow_status="completed"`, `next_agent=None`, advances `forward_stage` to 10, sets `checkpoint_stage="completed"` with `checkpoints` timestamp; resets `retry_counts["FinalProjectAgent"]=0`.
-- **Architectural & Design Note**: `final_project -> END` is unconditional; FinalProjectAgent write of `final_output` is topology-guarded (accessible only from `documentation` when `workflow_status == "documentation_complete"`).
+- **Architectural & Design Note (Deviation from workflow-design-revised.md §3.3)**: While §3.3 described an unconditional edge from `final_project` to `END`, `router_after_final_project` was introduced to route `human_approval_required == True` to `NODE_HUMAN_APPROVAL` so that exhaustion during packaging or summarization pauses the graph with an interrupt, allowing operator approval to retry and complete or rejection to fail. When `human_approval_required` is False, it routes to `END`. The router deliberately skips shared P1/P2 precedence checks so a late deadline cannot fail a successfully finished run. In `agents/final_project_agent.py`, `validate_safe_path` is called on every artifact path before packaging (failure -> `validation_failure` exhaustion, no LLM call), and cross-category duplicate paths trigger `validation_failure` exhaustion. In `workflows/runner.py`, `run_pipeline` raises `PipelineIncompleteError` if the final `workflow_status` is not `"completed"` or `"failed"`.
 - `tools/final_project/packager.py` — `ProjectPackager` Protocol, `PackageReport` dataclass, `validate_safe_path` function, and `FakeProjectPackager` test double.
 - `prompts/final_project/` — Markdown prompt templates (`system_prompt.md`, `user_prompt_template.md`, `revision_prompt.md`) with automated metadata header stripping.
-- `tests/agents/test_final_project_agent.py` & `tests/workflows/test_graph_final_project.py` — 14 tests covering constructor validation, path-safety guard (absolute paths, drive letters, and `..` segments), packager tool exception direct exhaustion, LLM retry without sleep, success path and `FinalProjectOutput` invariant validation, input state immutability, and real-graph integration (full 11-agent end-to-end pipeline test from ProductManager to FinalProject reaching `completed`, transient failure recovery, exhaustion resumption, and model_name passthrough).
+- `tests/agents/test_final_project_agent.py` & `tests/workflows/test_graph_final_project.py` — 14 tests covering constructor validation, path-safety guard (absolute paths, drive letters, and `..` segments), packager tool exception direct exhaustion, LLM retry without sleep, success path and `FinalProjectOutput` invariant validation, input state immutability, and real-graph integration (full 11-agent end-to-end pipeline test from ProductManager to FinalProject reaching `completed`, transient failure recovery, in-graph pause/resumption with interrupt, and model_name passthrough).
+
+### Composition Root & CLI (`workflows/factory.py`, `configs/agents.yaml`, `app.py`)
+
+Single composition root factory creating and configuring all 11 concrete pipeline agents with injected dependencies (`LLMClient`, protocol tools, `sleep_fn`), per `design.md` Section 6.1 and `workflow-design-revised.md` Section 3.7.4 & 3.8.2.
+
+- `configs/agents.yaml` — Central configuration specifying agent model selections (`claude-3-5-sonnet-20241022`, `gpt-4o`, `gpt-4o-mini`, `claude-3-haiku-20240307`), `max_retries`, and `timeout_seconds`, plus workflow-level `max_debug_cycles`.
+- `workflows/factory.py` — `load_agent_configs` and `create_agents` instantiating all 11 agents in exact `AGENT_NODE_ORDER` with model names from YAML and fake tool test doubles; returns dictionary mapping node names to callable agent instances.
+- `app.py` — Interactive and headless CLI entry point executing `run_pipeline` end-to-end with scripted `FakeLLMClient`.
+- `tests/workflows/test_factory.py` — Tests verifying factory output matches `AGENT_NODE_ORDER` exactly, all model names and retries match config, custom tool/client injection works, and CLI executes end-to-end.
 
 ---
 
 ## Status Summary
 
-All 11 autonomous agents across the entire pipeline are implemented, tested, and verified end-to-end.
+All 11 autonomous agents across the entire pipeline, composition root factory, and CLI runner are implemented, tested, and verified end-to-end.
 
-**Status: Complete and tested** — Full test suite: **558 tests passed** (0 failures, 0 warnings).
+**Status: Complete and tested** — Full test suite: **568 tests passed** (0 failures, 0 warnings).
 
 ---
 

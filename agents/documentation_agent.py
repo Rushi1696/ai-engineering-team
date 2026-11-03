@@ -27,14 +27,10 @@ from agents.base_agent import BaseAgent, DEFAULT_MAX_RETRIES, strip_metadata_hea
 from state.engineering_state import EngineeringState
 from state.models import (
     AgentExecutionMetadata,
-    CodeArtifact,
-    DeploymentArtifact,
     DocumentationArtifact,
     ErrorRecord,
     ProductRequirements,
-    ReviewReport,
     SystemArchitecture,
-    TestPlan,
 )
 from state.validators import WORKFLOW_STATUS_VALUES
 from tools.documentation.markdown_linter import LintReport, MarkdownLinter

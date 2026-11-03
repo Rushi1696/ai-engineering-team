@@ -30,8 +30,6 @@ from state.models import (
     CodeArtifact,
     DeploymentArtifact,
     ErrorRecord,
-    ProductRequirements,
-    ReviewReport,
     SystemArchitecture,
 )
 from state.validators import WORKFLOW_STATUS_VALUES

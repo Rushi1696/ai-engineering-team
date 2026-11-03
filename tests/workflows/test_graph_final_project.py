@@ -8,6 +8,7 @@ including the comprehensive full 11-agent end-to-end pipeline test.
 from typing import Any, Dict
 from unittest.mock import patch
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import Command
 import pytest
 
 from agents.architect_agent import ArchitectAgent
@@ -447,22 +448,9 @@ def test_graph_final_project_transient_failure_then_success():
 
 
 def test_graph_final_project_exhaustion_approval_and_rejection():
-    """Exhaustion in FinalProjectAgent terminates graph at END (unconditional edge); approval retries and succeeds; rejection fails."""
-    # Graph execution reaches END with human_approval_required=True
-    client = FakeLLMClient(
-        responses=[
-            RuntimeError("Summary gen fail 1"),
-            RuntimeError("Summary gen fail 2"),
-            RuntimeError("Summary gen fail 3"),
-        ]
-    )
-    final_agent = FinalProjectAgent(
-        model_name="final-model",
-        llm_client=client,
-        packager=FakeProjectPackager(),
-        max_retries=3,
-        sleep_fn=lambda s: None,
-    )
+    """Exhaustion in FinalProjectAgent routes to human_approval node via router_after_final_project;
+    graph pauses with interrupt; in-graph approval retries and completes; rejection transitions to failed."""
+    from tests.workflows.test_graph_documentation import _build_pipeline_stubs
 
     def _dummy_doc(state):
         return {
@@ -471,48 +459,94 @@ def test_graph_final_project_exhaustion_approval_and_rejection():
             "code_artifacts": {"src/app.py": {"content": "ok"}},
         }
 
-    from tests.workflows.test_graph_documentation import _build_pipeline_stubs
-
-    agents = _build_pipeline_stubs()
-    agents[NODE_DOCUMENTATION] = _dummy_doc
-    agents[NODE_FINAL_PROJECT] = final_agent.invoke
-
-    checkpointer = MemorySaver()
-    graph = build_graph(agents, checkpointer=checkpointer)
-    config = {"configurable": {"thread_id": "final-exhaust-thread"}}
-    state = create_initial_state(project_name="FinalExhaustApp", user_input="Build app")
-
-    final_state = graph.invoke(state, config=config)
-
-    # Because final_project -> END is unconditional, graph halts at END with exhaustion metadata
-    assert final_state["human_approval_required"] is True
-    assert final_state["next_agent"] == "FinalProjectAgent"
-    assert final_state["retry_counts"]["FinalProjectAgent"] == 3
-    assert final_state.get("final_output") is None
-
-    # Subcase A: Human approves retry
-    resumed_client = FakeLLMClient(responses=[_final_project_llm_dict()])
-    resumed_agent = FinalProjectAgent(
-        model_name="final-model",
-        llm_client=resumed_client,
-        packager=FakeProjectPackager(),
+    # Subcase A: Human approves retry -> completes with final_output
+    client_a = FakeLLMClient(
+        responses=[
+            RuntimeError("Summary gen fail 1"),
+            RuntimeError("Summary gen fail 2"),
+            RuntimeError("Summary gen fail 3"),
+            _final_project_llm_dict(),  # Succeeds on post-approval retry
+        ]
     )
-    with patch("workflows.interrupts.interrupt", return_value={"decision": "approved"}):
-        approval_update = human_approval_node(final_state)
+    final_agent_a = FinalProjectAgent(
+        model_name="final-model",
+        llm_client=client_a,
+        packager=FakeProjectPackager(),
+        max_retries=3,
+        sleep_fn=lambda s: None,
+    )
+    agents_a = _build_pipeline_stubs()
+    agents_a[NODE_DOCUMENTATION] = _dummy_doc
+    agents_a[NODE_FINAL_PROJECT] = final_agent_a.invoke
 
-    assert approval_update["human_approval_required"] is False
-    assert approval_update["retry_counts"]["FinalProjectAgent"] == 0
+    graph_a = build_graph(agents_a, checkpointer=MemorySaver())
+    config_a = {"configurable": {"thread_id": "final-approve-thread"}}
+    state_a = create_initial_state(project_name="FinalApproveApp", user_input="Build app")
 
-    merged_state = dict(final_state, **approval_update)
-    resumed_result = resumed_agent.execute(merged_state)
-    assert resumed_result["workflow_status"] == STATUS_COMPLETED
-    assert resumed_result["final_output"] is not None
+    # Stream execution until interruption at human_approval node
+    for _ in graph_a.stream(state_a, config=config_a):
+        pass
 
-    # Subcase B: Human rejects retry
-    with patch("workflows.interrupts.interrupt", return_value={"decision": "rejected"}):
-        rejection_update = human_approval_node(final_state)
+    # Graph is paused at human_approval interrupt
+    snapshot_a = graph_a.get_state(config_a)
+    assert len(snapshot_a.tasks) > 0
+    assert len(snapshot_a.tasks[0].interrupts) > 0
+    payload_a = snapshot_a.tasks[0].interrupts[0].value
+    assert snapshot_a.values.get("human_approval_required") is True
+    assert payload_a["next_agent"] == "FinalProjectAgent"
+    assert snapshot_a.values.get("final_output") is None
 
-    assert rejection_update["workflow_status"] == STATUS_FAILED
+    # Resume with approval Command
+    resume_approval = Command(resume={"decision": "approved", "notes": "Approved by operator"})
+    for _ in graph_a.stream(resume_approval, config=config_a):
+        pass
+
+    completed_state = graph_a.get_state(config_a).values
+    assert completed_state["workflow_status"] == STATUS_COMPLETED
+    assert completed_state["human_approval_required"] is False
+    assert completed_state.get("final_output") is not None
+    assert completed_state["final_output"].overall_review_status in ("approved", "not_reviewed")
+    assert len(client_a.calls) == 4
+
+    # Subcase B: Human rejects retry -> transitions to failed at END
+    client_b = FakeLLMClient(
+        responses=[
+            RuntimeError("Summary gen fail 1"),
+            RuntimeError("Summary gen fail 2"),
+            RuntimeError("Summary gen fail 3"),
+        ]
+    )
+    final_agent_b = FinalProjectAgent(
+        model_name="final-model",
+        llm_client=client_b,
+        packager=FakeProjectPackager(),
+        max_retries=3,
+        sleep_fn=lambda s: None,
+    )
+    agents_b = _build_pipeline_stubs()
+    agents_b[NODE_DOCUMENTATION] = _dummy_doc
+    agents_b[NODE_FINAL_PROJECT] = final_agent_b.invoke
+
+    graph_b = build_graph(agents_b, checkpointer=MemorySaver())
+    config_b = {"configurable": {"thread_id": "final-reject-thread"}}
+    state_b = create_initial_state(project_name="FinalRejectApp", user_input="Build app")
+
+    # Stream until interrupt
+    for _ in graph_b.stream(state_b, config=config_b):
+        pass
+
+    snapshot_b = graph_b.get_state(config_b)
+    assert len(snapshot_b.tasks) > 0
+    assert len(snapshot_b.tasks[0].interrupts) > 0
+
+    # Resume with rejection Command
+    resume_rejection = Command(resume={"decision": "rejected", "notes": "Rejected by operator"})
+    for _ in graph_b.stream(resume_rejection, config=config_b):
+        pass
+
+    failed_state = graph_b.get_state(config_b).values
+    assert failed_state["workflow_status"] == STATUS_FAILED
+    assert failed_state.get("final_output") is None
 
 
 # ===========================================================================

@@ -1,0 +1,66 @@
+# =============================================================================
+# configs/agents.yaml
+#
+# Agent configurations for the 11-agent autonomous engineering pipeline.
+# Sourced from design.md Section 5 (LLM Strategy), Section 6.1, and
+# workflow-design-revised.md Section 3.7.4 & Section 3.8.2.
+# =============================================================================
+
+workflow:
+  max_debug_cycles: 10
+
+agents:
+  product_manager:
+    model: "claude-3-5-sonnet-20241022"
+    max_retries: 3
+    timeout_seconds: 120
+
+  architect:
+    model: "claude-3-5-sonnet-20241022"
+    max_retries: 3
+    timeout_seconds: 180
+
+  task_planner:
+    model: "gpt-4o"
+    max_retries: 3
+    timeout_seconds: 120
+
+  backend:
+    model: "gpt-4o"
+    max_retries: 3
+    timeout_seconds: 300
+
+  frontend:
+    model: "gpt-4o"
+    max_retries: 3
+    timeout_seconds: 300
+
+  qa:
+    model: "gpt-4o-mini"
+    max_retries: 3
+    timeout_seconds: 300
+
+  debug:
+    model: "claude-3-5-sonnet-20241022"
+    max_retries: 3
+    timeout_seconds: 240
+
+  reviewer:
+    model: "claude-3-5-sonnet-20241022"
+    max_retries: 3
+    timeout_seconds: 360
+
+  devops:
+    model: "gpt-4o"
+    max_retries: 3
+    timeout_seconds: 180
+
+  documentation:
+    model: "claude-3-haiku-20240307"
+    max_retries: 3
+    timeout_seconds: 240
+
+  final_project:
+    model: "gpt-4o-mini"
+    max_retries: 3
+    timeout_seconds: 60

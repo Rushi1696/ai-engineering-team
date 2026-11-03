@@ -52,6 +52,7 @@ from workflows.routers import (
     router_after_debug,
     router_after_devops,
     router_after_documentation,
+    router_after_final_project,
     router_after_frontend,
     router_after_human_approval,
     router_after_product_manager,
@@ -200,7 +201,6 @@ def build_graph(
     # -------------------------------------------------------------------------
     # 4. Unconditional Edges (§3.1, §3.2, §3.7.3, §3.8.4)
     # -------------------------------------------------------------------------
-    builder.add_edge(NODE_FINAL_PROJECT, END)
     builder.add_edge(NODE_DEADLINE_ENFORCER, END)
     builder.add_edge(NODE_GLOBAL_CAP_HANDLER, END)
 
@@ -276,6 +276,13 @@ def build_graph(
         NODE_DOCUMENTATION,
         router_after_documentation,
         {NODE_FINAL_PROJECT: NODE_FINAL_PROJECT, **common_p1_p2_p3_destinations},
+    )
+
+    # final_project -> human_approval, END
+    builder.add_conditional_edges(
+        NODE_FINAL_PROJECT,
+        router_after_final_project,
+        {NODE_HUMAN_APPROVAL: NODE_HUMAN_APPROVAL, END: END},
     )
 
     # debug -> product_manager, architect, backend, frontend, qa, reviewer, devops,
