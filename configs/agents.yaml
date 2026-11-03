@@ -6,7 +6,7 @@
 # Supported providers:
 #   - "fake": Deterministic test doubles (no API key or network required).
 #   - "gemini": Google Gemini API via official google-genai SDK (requires GEMINI_API_KEY).
-#               Supported models: gemini-2.5-flash, gemini-2.5-pro, gemini-1.5-flash, gemini-1.5-pro.
+#               Supported models: gemini-3.8-flash, gemini-2.5-pro, gemini-1.5-flash, gemini-1.5-pro.
 #               Verify current models at: https://ai.google.dev/gemini-api/docs/models/gemini
 #   - "groq": Groq Cloud API via official groq SDK (requires GROQ_API_KEY).
 #             Supported models: llama-3.3-70b-versatile, llama-3.1-8b-instant, mixtral-8x7b-32768.
@@ -19,14 +19,14 @@ workflow:
 
 providers:
   gemini:
-    default_model: "gemini-2.5-flash"
+    default_model: "gemini-3.8-flash"
   groq:
     default_model: "llama-3.3-70b-versatile"
 
 agents:
   product_manager:
     model: "claude-3-5-sonnet-20241022"
-    gemini_model: "gemini-2.5-flash"
+    gemini_model: "gemini-3.8-flash"
     groq_model: "llama-3.3-70b-versatile"
     max_retries: 3
     timeout_seconds: 120
@@ -40,28 +40,28 @@ agents:
 
   task_planner:
     model: "gpt-4o"
-    gemini_model: "gemini-2.5-flash"
+    gemini_model: "gemini-3.8-flash"
     groq_model: "llama-3.3-70b-versatile"
     max_retries: 3
     timeout_seconds: 120
 
   backend:
     model: "gpt-4o"
-    gemini_model: "gemini-2.5-flash"
+    gemini_model: "gemini-3.8-flash"
     groq_model: "llama-3.3-70b-versatile"
     max_retries: 3
     timeout_seconds: 300
 
   frontend:
     model: "gpt-4o"
-    gemini_model: "gemini-2.5-flash"
+    gemini_model: "gemini-3.8-flash"
     groq_model: "llama-3.3-70b-versatile"
     max_retries: 3
     timeout_seconds: 300
 
   qa:
     model: "gpt-4o-mini"
-    gemini_model: "gemini-2.5-flash"
+    gemini_model: "gemini-3.8-flash"
     groq_model: "llama-3.1-8b-instant"
     max_retries: 3
     timeout_seconds: 300
@@ -82,21 +82,21 @@ agents:
 
   devops:
     model: "gpt-4o"
-    gemini_model: "gemini-2.5-flash"
+    gemini_model: "gemini-3.8-flash"
     groq_model: "llama-3.3-70b-versatile"
     max_retries: 3
     timeout_seconds: 180
 
   documentation:
     model: "claude-3-haiku-20240307"
-    gemini_model: "gemini-2.5-flash"
+    gemini_model: "gemini-3.8-flash"
     groq_model: "llama-3.1-8b-instant"
     max_retries: 3
     timeout_seconds: 240
 
   final_project:
     model: "gpt-4o-mini"
-    gemini_model: "gemini-2.5-flash"
+    gemini_model: "gemini-3.8-flash"
     groq_model: "llama-3.1-8b-instant"
     max_retries: 3
     timeout_seconds: 60

@@ -7,7 +7,7 @@ to verify API credentials, network reachability, and structured JSON parsing.
 Only executes against a real API when explicitly invoked with credentials configured.
 
 Usage:
-  python -m tools.shared.smoke_test --provider gemini [--model gemini-2.5-flash]
+  python -m tools.shared.smoke_test --provider gemini [--model gemini-3.8-flash]
   python -m tools.shared.smoke_test --provider groq   [--model llama-3.3-70b-versatile]
 """
 
@@ -110,7 +110,7 @@ def main() -> int:
     parser.add_argument(
         "--model",
         default=None,
-        help="Model identifier override (e.g. gemini-2.5-flash or llama-3.3-70b-versatile)",
+        help="Model identifier override (e.g. gemini-3.8-flash or llama-3.3-70b-versatile)",
     )
 
     args = parser.parse_args()

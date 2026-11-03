@@ -117,7 +117,7 @@ def create_agents(
             return node_cfg.get("gemini_model") or (
                 node_cfg["model"]
                 if "gemini" in node_cfg["model"].lower()
-                else provider_cfgs.get("gemini", {}).get("default_model", "gemini-2.5-flash")
+                else provider_cfgs.get("gemini", {}).get("default_model", "gemini-3.8-flash")
             )
         if node_provider == "groq":
             return node_cfg.get("groq_model") or (

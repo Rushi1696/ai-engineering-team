@@ -38,7 +38,7 @@ class GeminiLLMClient:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        default_model: str = "gemini-2.5-flash",
+        default_model: str = "gemini-3.8-flash",
     ) -> None:
         """Initialize Gemini client.
 
@@ -113,6 +113,9 @@ class GeminiLLMClient:
             if self.api_key and self.api_key in err_msg:
                 err_msg = err_msg.replace(self.api_key, "[REDACTED]")
             raise RuntimeError(f"Gemini API generation error ({effective_model}): {err_msg}") from exc
+
+        if getattr(response, "parsed", None) is not None and isinstance(response.parsed, response_model):
+            return response.parsed
 
         if not response or not getattr(response, "text", None):
             raise ValueError(f"Gemini returned an empty response for model {effective_model}")

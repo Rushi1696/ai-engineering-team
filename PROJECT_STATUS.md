@@ -312,7 +312,7 @@ Single composition root factory creating and configuring all 11 concrete pipelin
 
 Added provider-backed `LLMClient` protocol implementations for Google Gemini and Groq Cloud without modifying agent code or breaking fake/test setups:
 
-- `tools/shared/gemini_client.py` — `GeminiLLMClient` wrapping the official `google-genai` SDK with native Pydantic schema enforcement (`response_schema`, `application/json`), markdown fence stripping, and credential masking.
+- `tools/shared/gemini_client.py` — `GeminiLLMClient` wrapping the official `google-genai` SDK with native Pydantic schema enforcement (`response_schema`, `application/json`), markdown fence stripping, credential masking, and `gemini-3.8-flash` default model.
 - `tools/shared/groq_client.py` — `GroqLLMClient` wrapping `groq` with JSON-mode structured schema validation and credential masking.
 - `tools/shared/smoke_test.py` — Standalone credential verification tool sending a single structured ping to test live API connectivity without running the full pipeline.
 - `configs/agents.yaml` & `workflows/factory.py` — Multi-provider support via `workflow.default_provider` (`fake`, `gemini`, `groq`) and per-agent `provider` / `gemini_model` / `groq_model` overrides.

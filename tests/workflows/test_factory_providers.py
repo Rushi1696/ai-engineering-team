@@ -27,6 +27,7 @@ def test_create_provider_client_factory():
     with patch("google.genai.Client"):
         gemini = create_provider_client("gemini", api_key="test-key")
         assert isinstance(gemini, GeminiLLMClient)
+        assert gemini.default_model == "gemini-3.8-flash"
 
     # Groq with mock key
     with patch("groq.Groq"):
@@ -48,6 +49,9 @@ def test_create_agents_with_mocked_gemini_provider(monkeypatch):
         for node_name, agent in agents.items():
             assert isinstance(agent.llm_client, GeminiLLMClient)
             assert "gemini" in agent.model_name.lower()
+
+        # Product manager uses the new default Gemini model
+        assert agents["product_manager"].model_name == "gemini-3.8-flash"
 
 
 def test_create_agents_with_mocked_groq_provider(monkeypatch):
@@ -77,7 +81,7 @@ workflow:
 agents:
   product_manager:
     provider: "gemini"
-    model: "gemini-2.5-flash"
+    model: "gemini-3.8-flash"
     max_retries: 3
     timeout_seconds: 120
   architect:
@@ -114,7 +118,7 @@ agents:
         agents = create_agents(config_path=custom_yaml)
 
         assert isinstance(agents["product_manager"].llm_client, GeminiLLMClient)
-        assert agents["product_manager"].model_name == "gemini-2.5-flash"
+        assert agents["product_manager"].model_name == "gemini-3.8-flash"
 
         assert isinstance(agents["architect"].llm_client, GroqLLMClient)
         assert agents["architect"].model_name == "llama-3.3-70b-versatile"
