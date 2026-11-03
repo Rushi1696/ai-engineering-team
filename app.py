@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from typing import Any, Dict, List, Optional
 
 from tools.shared.llm_client import FakeLLMClient
@@ -230,27 +231,36 @@ def run_cli(
     config_path: Optional[str] = None,
     max_debug_cycles: int = 10,
     deadline: Optional[str] = None,
+    provider: str = "fake",
 ) -> Dict[str, Any]:
     """Execute the end-to-end multi-agent pipeline via the composition root factory."""
     print("=" * 70)
     print(" AI ENGINEERING TEAM - AUTONOMOUS MULTI-AGENT PIPELINE")
     print("=" * 70)
     print(f" Project Name:        {project_name}")
+    print(f" Provider:            {provider}")
     print(f" Max Debug Cycles:    {max_debug_cycles}")
     if deadline:
         print(f" Pipeline Deadline:   {deadline}")
     print(f" User Requirements:   {prompt}")
     print("-" * 70)
 
-    # 1. Scripted fake LLM client covering all forward stages
-    scripted_client = FakeLLMClient(responses=build_scripted_llm_responses())
-
-    # 2. Composition root: create all 11 agents with models sourced from configs/agents.yaml
-    agents = create_agents(
-        config_path=config_path,
-        llm_client=scripted_client,
-        sleep_fn=lambda _: None,
-    )
+    # 1. Initialize agents based on selected provider mode
+    if provider == "fake":
+        # Scripted fake LLM client covering all forward stages
+        scripted_client = FakeLLMClient(responses=build_scripted_llm_responses())
+        agents = create_agents(
+            config_path=config_path,
+            llm_client=scripted_client,
+            sleep_fn=lambda _: None,
+        )
+    else:
+        # Real provider mode: credentials read from environment / .env
+        agents = create_agents(
+            config_path=config_path,
+            provider=provider,
+            sleep_fn=time.sleep,
+        )
 
     print(f" [Factory] Initialized {len(agents)} pipeline agents from configuration:")
     for node_name, agent in agents.items():
@@ -258,7 +268,7 @@ def run_cli(
     print("-" * 70)
     print(" [Execution] Streaming pipeline execution through LangGraph...")
 
-    # 3. Run pipeline to completion
+    # 2. Run pipeline to completion
     final_state = run_pipeline(
         project_name=project_name,
         user_input=prompt,
@@ -315,6 +325,17 @@ def main() -> int:
         help="Path to agents.yaml configuration file",
     )
     parser.add_argument(
+        "--provider",
+        choices=["fake", "gemini", "groq"],
+        default="fake",
+        help="LLM inference provider: 'fake' (default scripted demo), or 'gemini'/'groq' for live API execution",
+    )
+    parser.add_argument(
+        "--smoke-test",
+        action="store_true",
+        help="Run a quick single-call smoke test against the selected provider and exit",
+    )
+    parser.add_argument(
         "--max-debug-cycles",
         type=int,
         default=10,
@@ -328,6 +349,11 @@ def main() -> int:
 
     args = parser.parse_args()
 
+    if args.smoke_test:
+        from tools.shared.smoke_test import run_smoke_test
+
+        return run_smoke_test(provider=args.provider)
+
     try:
         final_state = run_cli(
             project_name=args.project,
@@ -335,6 +361,7 @@ def main() -> int:
             config_path=args.config,
             max_debug_cycles=args.max_debug_cycles,
             deadline=args.deadline,
+            provider=args.provider,
         )
         return 0 if final_state.get("workflow_status") == "completed" else 1
     except Exception as exc:

@@ -95,3 +95,4 @@ def test_app_cli_end_to_end_scripted_run():
     with patch("sys.argv", ["app.py", "--project", "CliTestApp"]):
         exit_code = app.main()
         assert exit_code == 0
+

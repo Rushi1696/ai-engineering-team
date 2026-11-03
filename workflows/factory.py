@@ -37,7 +37,7 @@ from tools.final_project.packager import FakeProjectPackager, ProjectPackager
 from tools.qa.test_runner import FakeTestRunner, TestRunner
 from tools.reviewer.coverage_reader import CoverageReportReader, FakeCoverageReader
 from tools.reviewer.static_analyzer import FakeStaticAnalyzer, StaticAnalysisTool
-from tools.shared.llm_client import FakeLLMClient, LLMClient
+from tools.shared.llm_client import FakeLLMClient, LLMClient, create_provider_client
 from workflows.constants import AGENT_NODE_ORDER
 
 
@@ -73,6 +73,7 @@ def create_agents(
     llm_client: Optional[LLMClient] = None,
     tools: Optional[Dict[str, Any]] = None,
     sleep_fn: Optional[Callable[[float], None]] = None,
+    provider: Optional[str] = None,
 ) -> Dict[str, BaseAgent]:
     """Instantiate and configure all 11 concrete agents in exact AGENT_NODE_ORDER.
 
@@ -81,9 +82,11 @@ def create_agents(
 
     Args:
         config_path: Optional custom path to agents.yaml. Defaults to configs/agents.yaml.
-        llm_client: Injected LLM client (defaults to FakeLLMClient).
+        llm_client: Injected LLM client. If provided, overrides provider configuration.
+            If None, resolves client per agent based on configured provider (defaulting to fake).
         tools: Injected dictionary of tools (defaults to fake test doubles for each agent).
         sleep_fn: Injected sleep function for backoff (defaults to a fast no-op lambda).
+        provider: Optional global provider override ('fake', 'gemini', 'groq').
 
     Returns:
         Dictionary mapping each node name in AGENT_NODE_ORDER to its concrete agent instance.
@@ -94,8 +97,36 @@ def create_agents(
     """
     configs = load_agent_configs(config_path)
     agent_configs: Dict[str, Any] = configs.get("agents", {})
+    workflow_cfg: Dict[str, Any] = configs.get("workflow", {})
+    provider_cfgs: Dict[str, Any] = configs.get("providers", {})
 
-    effective_llm_client = llm_client if llm_client is not None else FakeLLMClient()
+    global_provider = (provider or workflow_cfg.get("default_provider", "fake")).lower().strip()
+    provider_cache: Dict[str, LLMClient] = {}
+
+    def _get_client_for_node(node_cfg: Dict[str, Any]) -> LLMClient:
+        if llm_client is not None:
+            return llm_client
+        node_provider = (node_cfg.get("provider") or global_provider).lower().strip()
+        if node_provider not in provider_cache:
+            provider_cache[node_provider] = create_provider_client(node_provider)
+        return provider_cache[node_provider]
+
+    def _get_model_for_node(node_cfg: Dict[str, Any]) -> str:
+        node_provider = (node_cfg.get("provider") or global_provider).lower().strip()
+        if node_provider == "gemini":
+            return node_cfg.get("gemini_model") or (
+                node_cfg["model"]
+                if "gemini" in node_cfg["model"].lower()
+                else provider_cfgs.get("gemini", {}).get("default_model", "gemini-2.5-flash")
+            )
+        if node_provider == "groq":
+            return node_cfg.get("groq_model") or (
+                node_cfg["model"]
+                if any(k in node_cfg["model"].lower() for k in ["llama", "mixtral", "gemma", "qwen"])
+                else provider_cfgs.get("groq", {}).get("default_model", "llama-3.3-70b-versatile")
+            )
+        return node_cfg["model"]
+
     effective_sleep_fn = sleep_fn if sleep_fn is not None else (lambda _: None)
     tool_map = tools or {}
 
@@ -129,75 +160,75 @@ def create_agents(
     final_cfg = _get_cfg("final_project")
 
     pm_agent = ProductManagerAgent(
-        model_name=pm_cfg["model"],
-        llm_client=effective_llm_client,
+        model_name=_get_model_for_node(pm_cfg),
+        llm_client=_get_client_for_node(pm_cfg),
         max_retries=pm_cfg.get("max_retries", DEFAULT_MAX_RETRIES),
         sleep_fn=effective_sleep_fn,
     )
     arch_agent = ArchitectAgent(
-        model_name=arch_cfg["model"],
-        llm_client=effective_llm_client,
+        model_name=_get_model_for_node(arch_cfg),
+        llm_client=_get_client_for_node(arch_cfg),
         max_retries=arch_cfg.get("max_retries", DEFAULT_MAX_RETRIES),
         sleep_fn=effective_sleep_fn,
     )
     tp_agent = TaskPlannerAgent(
-        model_name=tp_cfg["model"],
-        llm_client=effective_llm_client,
+        model_name=_get_model_for_node(tp_cfg),
+        llm_client=_get_client_for_node(tp_cfg),
         max_retries=tp_cfg.get("max_retries", DEFAULT_MAX_RETRIES),
         sleep_fn=effective_sleep_fn,
     )
     be_agent = BackendAgent(
-        model_name=be_cfg["model"],
-        llm_client=effective_llm_client,
+        model_name=_get_model_for_node(be_cfg),
+        llm_client=_get_client_for_node(be_cfg),
         max_retries=be_cfg.get("max_retries", DEFAULT_MAX_RETRIES),
         sleep_fn=effective_sleep_fn,
     )
     fe_agent = FrontendAgent(
-        model_name=fe_cfg["model"],
-        llm_client=effective_llm_client,
+        model_name=_get_model_for_node(fe_cfg),
+        llm_client=_get_client_for_node(fe_cfg),
         max_retries=fe_cfg.get("max_retries", DEFAULT_MAX_RETRIES),
         sleep_fn=effective_sleep_fn,
     )
     qa_agent = QAAgent(
-        model_name=qa_cfg["model"],
-        llm_client=effective_llm_client,
+        model_name=_get_model_for_node(qa_cfg),
+        llm_client=_get_client_for_node(qa_cfg),
         test_runner=test_runner,
         max_retries=qa_cfg.get("max_retries", DEFAULT_MAX_RETRIES),
         sleep_fn=effective_sleep_fn,
     )
     dbg_agent = DebugAgent(
-        model_name=dbg_cfg["model"],
-        llm_client=effective_llm_client,
+        model_name=_get_model_for_node(dbg_cfg),
+        llm_client=_get_client_for_node(dbg_cfg),
         sandbox=sandbox,
         log_parser=log_parser,
         max_retries=dbg_cfg.get("max_retries", DEFAULT_MAX_RETRIES),
         sleep_fn=effective_sleep_fn,
     )
     rev_agent = ReviewerAgent(
-        model_name=rev_cfg["model"],
-        llm_client=effective_llm_client,
+        model_name=_get_model_for_node(rev_cfg),
+        llm_client=_get_client_for_node(rev_cfg),
         static_analyzer=static_analyzer,
         coverage_reader=coverage_reader,
         max_retries=rev_cfg.get("max_retries", DEFAULT_MAX_RETRIES),
         sleep_fn=effective_sleep_fn,
     )
     devops_agent = DevOpsAgent(
-        model_name=devops_cfg["model"],
-        llm_client=effective_llm_client,
+        model_name=_get_model_for_node(devops_cfg),
+        llm_client=_get_client_for_node(devops_cfg),
         validator=validator,
         max_retries=devops_cfg.get("max_retries", DEFAULT_MAX_RETRIES),
         sleep_fn=effective_sleep_fn,
     )
     doc_agent = DocumentationAgent(
-        model_name=doc_cfg["model"],
-        llm_client=effective_llm_client,
+        model_name=_get_model_for_node(doc_cfg),
+        llm_client=_get_client_for_node(doc_cfg),
         linter=linter,
         max_retries=doc_cfg.get("max_retries", DEFAULT_MAX_RETRIES),
         sleep_fn=effective_sleep_fn,
     )
     final_agent = FinalProjectAgent(
-        model_name=final_cfg["model"],
-        llm_client=effective_llm_client,
+        model_name=_get_model_for_node(final_cfg),
+        llm_client=_get_client_for_node(final_cfg),
         packager=packager,
         max_retries=final_cfg.get("max_retries", DEFAULT_MAX_RETRIES),
         sleep_fn=effective_sleep_fn,

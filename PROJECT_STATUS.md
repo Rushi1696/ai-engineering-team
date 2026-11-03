@@ -308,13 +308,24 @@ Single composition root factory creating and configuring all 11 concrete pipelin
 - `app.py` — Interactive and headless CLI entry point executing `run_pipeline` end-to-end with scripted `FakeLLMClient`.
 - `tests/workflows/test_factory.py` — Tests verifying factory output matches `AGENT_NODE_ORDER` exactly, all model names and retries match config, custom tool/client injection works, and CLI executes end-to-end.
 
+### Real LLM Provider Support (`tools/shared/gemini_client.py`, `tools/shared/groq_client.py`, `tools/shared/smoke_test.py`)
+
+Added provider-backed `LLMClient` protocol implementations for Google Gemini and Groq Cloud without modifying agent code or breaking fake/test setups:
+
+- `tools/shared/gemini_client.py` — `GeminiLLMClient` wrapping the official `google-genai` SDK with native Pydantic schema enforcement (`response_schema`, `application/json`), markdown fence stripping, and credential masking.
+- `tools/shared/groq_client.py` — `GroqLLMClient` wrapping `groq` with JSON-mode structured schema validation and credential masking.
+- `tools/shared/smoke_test.py` — Standalone credential verification tool sending a single structured ping to test live API connectivity without running the full pipeline.
+- `configs/agents.yaml` & `workflows/factory.py` — Multi-provider support via `workflow.default_provider` (`fake`, `gemini`, `groq`) and per-agent `provider` / `gemini_model` / `groq_model` overrides.
+- `.env.example` — Template with placeholder `GEMINI_API_KEY` and `GROQ_API_KEY`.
+- `tests/tools/test_gemini_client.py`, `tests/tools/test_groq_client.py`, `tests/workflows/test_factory_providers.py` — 18 unit tests using mocked SDK calls, ensuring zero network calls and no requirement for live API keys in CI.
+
 ---
 
 ## Status Summary
 
-All 11 autonomous agents across the entire pipeline, composition root factory, and CLI runner are implemented, tested, and verified end-to-end.
+All 11 autonomous agents across the entire pipeline, composition root factory, CLI runner, and multi-provider LLM support (Fake, Gemini, Groq) are implemented, tested, and verified end-to-end.
 
-**Status: Complete and tested** — Full test suite: **568 tests passed** (0 failures, 0 warnings).
+**Status: Complete and tested** — Full test suite: **586 tests passed** (0 failures, 0 warnings).
 
 ---
 

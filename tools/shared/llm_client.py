@@ -82,4 +82,48 @@ class FakeLLMClient:
         )
 
 
-__all__ = ["LLMClient", "FakeLLMClient"]
+def create_provider_client(
+    provider: str,
+    default_model: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> LLMClient:
+    """Factory creating an LLMClient instance for the specified provider ('fake', 'gemini', 'groq').
+
+    Args:
+        provider: Provider name ('fake', 'gemini', 'groq').
+        default_model: Optional default model name.
+        api_key: Optional explicit API key override.
+
+    Returns:
+        An instantiated LLMClient implementation.
+
+    Raises:
+        ValueError: If provider name is unsupported or required credentials are missing.
+    """
+    normalized = provider.lower().strip()
+    if normalized == "fake":
+        return FakeLLMClient()
+    if normalized == "gemini":
+        from tools.shared.gemini_client import GeminiLLMClient
+
+        kwargs: Dict[str, Any] = {}
+        if default_model:
+            kwargs["default_model"] = default_model
+        if api_key:
+            kwargs["api_key"] = api_key
+        return GeminiLLMClient(**kwargs)
+    if normalized == "groq":
+        from tools.shared.groq_client import GroqLLMClient
+
+        kwargs = {}
+        if default_model:
+            kwargs["default_model"] = default_model
+        if api_key:
+            kwargs["api_key"] = api_key
+        return GroqLLMClient(**kwargs)
+    raise ValueError(
+        f"Unsupported LLM provider '{provider}'. Supported options: 'fake', 'gemini', 'groq'"
+    )
+
+
+__all__ = ["LLMClient", "FakeLLMClient", "create_provider_client"]
