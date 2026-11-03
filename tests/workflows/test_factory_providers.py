@@ -142,3 +142,30 @@ def test_smoke_test_with_mocked_credentials_succeeds(monkeypatch):
     with patch("google.genai.Client", return_value=mock_genai_client):
         exit_code = run_smoke_test(provider="gemini")
         assert exit_code == 0
+
+
+def test_smoke_test_groq_missing_credentials_exits_with_code_1(monkeypatch):
+    """run_smoke_test returns 1 when GROQ_API_KEY is missing."""
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    with patch("tools.shared.smoke_test.load_dotenv"):
+        exit_code = run_smoke_test(provider="groq")
+        assert exit_code == 1
+
+
+def test_smoke_test_groq_with_mocked_credentials_succeeds(monkeypatch):
+    """run_smoke_test returns 0 and validates schema when Groq API responds."""
+    monkeypatch.setenv("GROQ_API_KEY", "mock-groq-key")
+    mock_groq_client = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.message.content = '{"status": "ok", "provider": "groq", "message": "Connection active"}'
+    mock_groq_client.chat.completions.create.return_value = MagicMock(choices=[mock_choice])
+
+    with patch("groq.Groq", return_value=mock_groq_client):
+        exit_code = run_smoke_test(provider="groq")
+        assert exit_code == 0
+
+
+def test_smoke_test_unsupported_provider():
+    """run_smoke_test returns 1 for unsupported provider."""
+    exit_code = run_smoke_test(provider="unsupported")
+    assert exit_code == 1
