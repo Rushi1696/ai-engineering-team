@@ -26,6 +26,13 @@ def test_groq_client_missing_key_raises(monkeypatch):
             GroqLLMClient(api_key=None)
 
 
+def test_groq_client_default_model_is_gpt_oss_120b():
+    """GroqLLMClient default_model is openai/gpt-oss-120b when unspecified."""
+    with patch("groq.Groq"):
+        client = GroqLLMClient(api_key="mock-key")
+        assert client.default_model == "openai/gpt-oss-120b"
+
+
 def test_groq_client_generate_structured_success():
     """GroqLLMClient sends messages with schema instructions and parses JSON response."""
     mock_client = MagicMock()
@@ -35,14 +42,15 @@ def test_groq_client_generate_structured_success():
     mock_client.chat.completions.create.return_value = mock_completion
 
     with patch("groq.Groq", return_value=mock_client):
-        client = GroqLLMClient(api_key="mock-groq-key", default_model="llama-3.3-70b-versatile")
+        client = GroqLLMClient(api_key="mock-groq-key")
         client._client = mock_client
 
+        # Call with explicit model override
         result = client.generate_structured(
             prompt="Plan tasks",
             response_model=SampleSchema,
             system_prompt="Be an architect",
-            model_name="llama-3.1-8b-instant",
+            model_name="qwen/qwen3.8-27b",
             temperature=0.1,
         )
 
@@ -52,9 +60,19 @@ def test_groq_client_generate_structured_success():
 
         mock_client.chat.completions.create.assert_called_once()
         kwargs = mock_client.chat.completions.create.call_args.kwargs
-        assert kwargs["model"] == "llama-3.1-8b-instant"
+        assert kwargs["model"] == "qwen/qwen3.8-27b"
         assert kwargs["response_format"] == {"type": "json_object"}
         assert any("SampleSchema" in m["content"] for m in kwargs["messages"])
+
+        # Call with fallback to default_model (openai/gpt-oss-120b)
+        mock_client.chat.completions.create.reset_mock()
+        default_result = client.generate_structured(
+            prompt="Default model check",
+            response_model=SampleSchema,
+        )
+        assert isinstance(default_result, SampleSchema)
+        default_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert default_kwargs["model"] == "openai/gpt-oss-120b"
 
 
 def test_groq_client_cleans_markdown_fences():
@@ -64,12 +82,13 @@ def test_groq_client_cleans_markdown_fences():
     mock_choice.message.content = "```json\n" + json.dumps({"summary": "Fenced output", "score": 88}) + "\n```"
     mock_client.chat.completions.create.return_value = MagicMock(choices=[mock_choice])
 
-    client = GroqLLMClient(api_key="mock-key")
-    client._client = mock_client
+    with patch("groq.Groq"):
+        client = GroqLLMClient(api_key="mock-key", default_model="openai/gpt-oss-120b")
+        client._client = mock_client
 
-    result = client.generate_structured(prompt="test", response_model=SampleSchema)
-    assert result.summary == "Fenced output"
-    assert result.score == 88
+        result = client.generate_structured(prompt="test", response_model=SampleSchema)
+        assert result.summary == "Fenced output"
+        assert result.score == 88
 
 
 def test_groq_client_api_error_handling_and_secret_masking():
@@ -77,14 +96,15 @@ def test_groq_client_api_error_handling_and_secret_masking():
     mock_client = MagicMock()
     mock_client.chat.completions.create.side_effect = RuntimeError("Rate limit hit with gsk_secret_key_123")
 
-    client = GroqLLMClient(api_key="gsk_secret_key_123")
-    client._client = mock_client
+    with patch("groq.Groq"):
+        client = GroqLLMClient(api_key="gsk_secret_key_123")
+        client._client = mock_client
 
-    with pytest.raises(RuntimeError) as exc_info:
-        client.generate_structured(prompt="test", response_model=SampleSchema)
+        with pytest.raises(RuntimeError) as exc_info:
+            client.generate_structured(prompt="test", response_model=SampleSchema)
 
-    assert "gsk_secret_key_123" not in str(exc_info.value)
-    assert "[REDACTED]" in str(exc_info.value)
+        assert "gsk_secret_key_123" not in str(exc_info.value)
+        assert "[REDACTED]" in str(exc_info.value)
 
 
 def test_groq_client_empty_response_raises():
@@ -92,11 +112,12 @@ def test_groq_client_empty_response_raises():
     mock_client = MagicMock()
     mock_client.chat.completions.create.return_value = MagicMock(choices=[])
 
-    client = GroqLLMClient(api_key="mock-key")
-    client._client = mock_client
+    with patch("groq.Groq"):
+        client = GroqLLMClient(api_key="mock-key")
+        client._client = mock_client
 
-    with pytest.raises(ValueError, match="empty response"):
-        client.generate_structured(prompt="test", response_model=SampleSchema)
+        with pytest.raises(ValueError, match="empty response"):
+            client.generate_structured(prompt="test", response_model=SampleSchema)
 
 
 def test_groq_client_malformed_json_raises():
@@ -106,8 +127,9 @@ def test_groq_client_malformed_json_raises():
     mock_choice.message.content = "invalid { json"
     mock_client.chat.completions.create.return_value = MagicMock(choices=[mock_choice])
 
-    client = GroqLLMClient(api_key="mock-key")
-    client._client = mock_client
+    with patch("groq.Groq"):
+        client = GroqLLMClient(api_key="mock-key")
+        client._client = mock_client
 
-    with pytest.raises(ValueError, match="Failed to validate Groq response"):
-        client.generate_structured(prompt="test", response_model=SampleSchema)
+        with pytest.raises(ValueError, match="Failed to validate Groq response"):
+            client.generate_structured(prompt="test", response_model=SampleSchema)

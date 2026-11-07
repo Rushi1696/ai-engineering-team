@@ -122,8 +122,8 @@ def create_agents(
         if node_provider == "groq":
             return node_cfg.get("groq_model") or (
                 node_cfg["model"]
-                if any(k in node_cfg["model"].lower() for k in ["llama", "mixtral", "gemma", "qwen"])
-                else provider_cfgs.get("groq", {}).get("default_model", "llama-3.3-70b-versatile")
+                if any(k in node_cfg["model"].lower() for k in ["gpt-oss", "qwen", "llama", "mixtral", "gemma"])
+                else provider_cfgs.get("groq", {}).get("default_model", "openai/gpt-oss-120b")
             )
         return node_cfg["model"]
 

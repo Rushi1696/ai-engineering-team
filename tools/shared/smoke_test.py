@@ -8,7 +8,7 @@ Only executes against a real API when explicitly invoked with credentials config
 
 Usage:
   python -m tools.shared.smoke_test --provider gemini [--model gemini-3.8-flash]
-  python -m tools.shared.smoke_test --provider groq   [--model llama-3.3-70b-versatile]
+  python -m tools.shared.smoke_test --provider groq   [--model openai/gpt-oss-120b]
 """
 
 from __future__ import annotations
@@ -110,7 +110,7 @@ def main() -> int:
     parser.add_argument(
         "--model",
         default=None,
-        help="Model identifier override (e.g. gemini-3.8-flash or llama-3.3-70b-versatile)",
+        help="Model identifier override (e.g. gemini-3.8-flash or openai/gpt-oss-120b)",
     )
 
     args = parser.parse_args()

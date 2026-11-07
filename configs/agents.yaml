@@ -9,7 +9,7 @@
 #               Supported models: gemini-3.8-flash, gemini-2.5-pro, gemini-1.5-flash, gemini-1.5-pro.
 #               Verify current models at: https://ai.google.dev/gemini-api/docs/models/gemini
 #   - "groq": Groq Cloud API via official groq SDK (requires GROQ_API_KEY).
-#             Supported models: llama-3.3-70b-versatile, llama-3.1-8b-instant, mixtral-8x7b-32768.
+#             Supported models: openai/gpt-oss-120b, qwen/qwen3.8-27b.
 #             Verify current models at: https://console.groq.com/docs/models
 # =============================================================================
 
@@ -21,82 +21,82 @@ providers:
   gemini:
     default_model: "gemini-3.8-flash"
   groq:
-    default_model: "llama-3.3-70b-versatile"
+    default_model: "openai/gpt-oss-120b"
 
 agents:
   product_manager:
     model: "claude-3-5-sonnet-20241022"
     gemini_model: "gemini-3.8-flash"
-    groq_model: "llama-3.3-70b-versatile"
+    groq_model: "openai/gpt-oss-120b"
     max_retries: 3
     timeout_seconds: 120
 
   architect:
     model: "claude-3-5-sonnet-20241022"
     gemini_model: "gemini-2.5-pro"
-    groq_model: "llama-3.3-70b-versatile"
+    groq_model: "openai/gpt-oss-120b"
     max_retries: 3
     timeout_seconds: 180
 
   task_planner:
     model: "gpt-4o"
     gemini_model: "gemini-3.8-flash"
-    groq_model: "llama-3.3-70b-versatile"
+    groq_model: "openai/gpt-oss-120b"
     max_retries: 3
     timeout_seconds: 120
 
   backend:
     model: "gpt-4o"
     gemini_model: "gemini-3.8-flash"
-    groq_model: "llama-3.3-70b-versatile"
+    groq_model: "openai/gpt-oss-120b"
     max_retries: 3
     timeout_seconds: 300
 
   frontend:
     model: "gpt-4o"
     gemini_model: "gemini-3.8-flash"
-    groq_model: "llama-3.3-70b-versatile"
+    groq_model: "openai/gpt-oss-120b"
     max_retries: 3
     timeout_seconds: 300
 
   qa:
     model: "gpt-4o-mini"
     gemini_model: "gemini-3.8-flash"
-    groq_model: "llama-3.1-8b-instant"
+    groq_model: "qwen/qwen3.8-27b"
     max_retries: 3
     timeout_seconds: 300
 
   debug:
     model: "claude-3-5-sonnet-20241022"
     gemini_model: "gemini-2.5-pro"
-    groq_model: "llama-3.3-70b-versatile"
+    groq_model: "openai/gpt-oss-120b"
     max_retries: 3
     timeout_seconds: 240
 
   reviewer:
     model: "claude-3-5-sonnet-20241022"
     gemini_model: "gemini-2.5-pro"
-    groq_model: "llama-3.3-70b-versatile"
+    groq_model: "openai/gpt-oss-120b"
     max_retries: 3
     timeout_seconds: 360
 
   devops:
     model: "gpt-4o"
     gemini_model: "gemini-3.8-flash"
-    groq_model: "llama-3.3-70b-versatile"
+    groq_model: "openai/gpt-oss-120b"
     max_retries: 3
     timeout_seconds: 180
 
   documentation:
     model: "claude-3-haiku-20240307"
     gemini_model: "gemini-3.8-flash"
-    groq_model: "llama-3.1-8b-instant"
+    groq_model: "qwen/qwen3.8-27b"
     max_retries: 3
     timeout_seconds: 240
 
   final_project:
     model: "gpt-4o-mini"
     gemini_model: "gemini-3.8-flash"
-    groq_model: "llama-3.1-8b-instant"
+    groq_model: "qwen/qwen3.8-27b"
     max_retries: 3
     timeout_seconds: 60

@@ -33,6 +33,7 @@ def test_create_provider_client_factory():
     with patch("groq.Groq"):
         groq = create_provider_client("groq", api_key="test-key")
         assert isinstance(groq, GroqLLMClient)
+        assert groq.default_model == "openai/gpt-oss-120b"
 
     # Unsupported
     with pytest.raises(ValueError, match="Unsupported LLM provider 'unsupported'"):
@@ -63,7 +64,10 @@ def test_create_agents_with_mocked_groq_provider(monkeypatch):
         assert tuple(agents.keys()) == AGENT_NODE_ORDER
         for node_name, agent in agents.items():
             assert isinstance(agent.llm_client, GroqLLMClient)
-            assert any(m in agent.model_name.lower() for m in ["llama", "mixtral", "gemma"])
+            assert any(m in agent.model_name.lower() for m in ["gpt-oss", "qwen", "llama", "mixtral", "gemma"])
+
+        # Product manager uses the new default Groq model
+        assert agents["product_manager"].model_name == "openai/gpt-oss-120b"
 
 
 def test_create_agents_per_agent_provider_config(tmp_path: Path, monkeypatch):
@@ -86,7 +90,7 @@ agents:
     timeout_seconds: 120
   architect:
     provider: "groq"
-    model: "llama-3.3-70b-versatile"
+    model: "openai/gpt-oss-120b"
     max_retries: 3
     timeout_seconds: 180
   task_planner:
@@ -121,7 +125,7 @@ agents:
         assert agents["product_manager"].model_name == "gemini-3.8-flash"
 
         assert isinstance(agents["architect"].llm_client, GroqLLMClient)
-        assert agents["architect"].model_name == "llama-3.3-70b-versatile"
+        assert agents["architect"].model_name == "openai/gpt-oss-120b"
 
         assert isinstance(agents["task_planner"].llm_client, FakeLLMClient)
         assert agents["task_planner"].model_name == "test-fake-planner"

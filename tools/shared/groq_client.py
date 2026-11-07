@@ -39,7 +39,7 @@ class GroqLLMClient:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        default_model: str = "llama-3.3-70b-versatile",
+        default_model: str = "openai/gpt-oss-120b",
     ) -> None:
         """Initialize Groq client.
 
