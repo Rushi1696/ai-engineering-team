@@ -14,6 +14,8 @@ Source of truth:
 from __future__ import annotations
 
 import argparse
+import json
+from pathlib import Path
 import sys
 import time
 from typing import Any, Dict, List, Optional
@@ -21,7 +23,7 @@ from typing import Any, Dict, List, Optional
 from tools.shared.budget import BudgetExceededError, BudgetedLLMClient, RunBudget
 from tools.shared.llm_client import FakeLLMClient
 from workflows.factory import create_agents, load_agent_configs
-from workflows.runner import run_pipeline
+from workflows.runner import PipelineIncompleteError, run_pipeline
 
 
 def build_scripted_llm_responses() -> List[Dict[str, Any]]:
@@ -223,6 +225,63 @@ def build_scripted_llm_responses() -> List[Dict[str, Any]]:
     ]
 
 
+def _dump_state_artifacts(state: Dict[str, Any], target_dir: str) -> None:
+    """Dump domain artifacts and sanitized errors to target directory as JSON files."""
+    dump_path = Path(target_dir)
+    dump_path.mkdir(parents=True, exist_ok=True)
+
+    # 1. requirements.json
+    if state.get("requirements") is not None:
+        req = state["requirements"]
+        if hasattr(req, "model_dump_json"):
+            req_content = req.model_dump_json(indent=2)
+        elif hasattr(req, "model_dump"):
+            req_content = json.dumps(req.model_dump(), indent=2)
+        else:
+            req_content = json.dumps(req, indent=2)
+        (dump_path / "requirements.json").write_text(req_content, encoding="utf-8")
+
+    # 2. architecture.json
+    if state.get("architecture") is not None:
+        arch = state["architecture"]
+        if hasattr(arch, "model_dump_json"):
+            arch_content = arch.model_dump_json(indent=2)
+        elif hasattr(arch, "model_dump"):
+            arch_content = json.dumps(arch.model_dump(), indent=2)
+        else:
+            arch_content = json.dumps(arch, indent=2)
+        (dump_path / "architecture.json").write_text(arch_content, encoding="utf-8")
+
+    # 3. task_plan.json
+    if state.get("task_plan") is not None:
+        plan = state["task_plan"]
+        if hasattr(plan, "model_dump_json"):
+            plan_content = plan.model_dump_json(indent=2)
+        elif hasattr(plan, "model_dump"):
+            plan_content = json.dumps(plan.model_dump(), indent=2)
+        else:
+            plan_content = json.dumps(plan, indent=2)
+        (dump_path / "task_plan.json").write_text(plan_content, encoding="utf-8")
+
+    # 4. errors.json: agent, error_type, message only, NO traceback
+    raw_errors = state.get("errors") or []
+    sanitized_errors = []
+    for err in raw_errors:
+        if isinstance(err, dict):
+            sanitized_errors.append({
+                "agent": err.get("agent", "unknown"),
+                "error_type": err.get("error_type", "unknown"),
+                "message": err.get("message", ""),
+            })
+        else:
+            sanitized_errors.append({
+                "agent": getattr(err, "agent", "unknown"),
+                "error_type": getattr(err, "error_type", "unknown"),
+                "message": getattr(err, "message", str(err)),
+            })
+    (dump_path / "errors.json").write_text(json.dumps(sanitized_errors, indent=2), encoding="utf-8")
+
+
 def run_cli(
     project_name: str = "Autonomous E2E Engineering System",
     prompt: str = (
@@ -236,6 +295,8 @@ def run_cli(
     max_total_calls: Optional[int] = None,
     max_prompt_chars_per_call: Optional[int] = None,
     max_total_prompt_chars: Optional[int] = None,
+    stop_after: Optional[str] = None,
+    dump_state: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Execute the end-to-end multi-agent pipeline via the composition root factory."""
     print("=" * 70)
@@ -293,6 +354,7 @@ def run_cli(
     print(" [Execution] Streaming pipeline execution through LangGraph...")
 
     # 2. Run pipeline to completion
+    final_state: Dict[str, Any] = {}
     try:
         final_state = run_pipeline(
             project_name=project_name,
@@ -300,10 +362,23 @@ def run_cli(
             agents=agents,
             pipeline_deadline_at=deadline,
             max_debug_cycles=max_debug_cycles,
+            stop_after=stop_after,
         )
+    except Exception as exc:
+        if isinstance(exc, PipelineIncompleteError) and getattr(exc, "final_state", None):
+            final_state = exc.final_state
+        if not final_state.get("errors"):
+            final_state["errors"] = [{
+                "agent": final_state.get("current_agent", "pipeline"),
+                "error_type": "pipeline_error",
+                "message": str(exc),
+            }]
+        raise
     finally:
         if budget is not None:
             print(budget.generate_report())
+        if dump_state:
+            _dump_state_artifacts(final_state, dump_state)
 
     print(" [Execution] Pipeline execution completed!")
     print("=" * 70)
@@ -392,6 +467,19 @@ def main() -> int:
         default=None,
         help="Maximum cumulative prompt characters across all LLM calls",
     )
+    parser.add_argument(
+        "--stop-after",
+        type=str,
+        default=None,
+        help="Stop the pipeline cleanly after specified agent succeeds (e.g. ProductManagerAgent, TaskPlannerAgent)",
+    )
+    parser.add_argument(
+        "--dump-state",
+        nargs="?",
+        const="runs",
+        default=None,
+        help="Directory path to export generated state artifacts as JSON files (defaults to 'runs/' if flag is passed)",
+    )
 
     args = parser.parse_args()
 
@@ -411,7 +499,12 @@ def main() -> int:
             max_total_calls=args.max_total_calls,
             max_prompt_chars_per_call=args.max_prompt_chars_per_call,
             max_total_prompt_chars=args.max_total_prompt_chars,
+            stop_after=args.stop_after,
+            dump_state=args.dump_state,
         )
+        if final_state.get("stopped_after"):
+            print(f"stopped after {final_state['stopped_after']}")
+            return 0
         return 0 if final_state.get("workflow_status") == "completed" else 1
     except Exception as exc:
         print(f"\n[Error] Pipeline execution failed: {exc}", file=sys.stderr)

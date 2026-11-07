@@ -30,7 +30,38 @@ from workflows.routers import parse_iso_utc
 class PipelineIncompleteError(RuntimeError):
     """Raised when pipeline terminates in an incomplete status (neither completed nor failed)."""
 
-    pass
+    def __init__(self, message: str, final_state: Optional[Dict[str, Any]] = None) -> None:
+        super().__init__(message)
+        self.final_state = final_state or {}
+
+
+STOP_AFTER_NODE_MAP: Dict[str, str] = {
+    "product_manager": "product_manager",
+    "productmanager": "product_manager",
+    "productmanageragent": "product_manager",
+    "architect": "architect",
+    "architectagent": "architect",
+    "task_planner": "task_planner",
+    "taskplanner": "task_planner",
+    "taskplanneragent": "task_planner",
+    "backend": "backend",
+    "backendagent": "backend",
+    "frontend": "frontend",
+    "frontendagent": "frontend",
+    "qa": "qa",
+    "qaagent": "qa",
+    "debug": "debug",
+    "debugagent": "debug",
+    "reviewer": "reviewer",
+    "revieweragent": "reviewer",
+    "devops": "devops",
+    "devopsagent": "devops",
+    "documentation": "documentation",
+    "documentationagent": "documentation",
+    "final_project": "final_project",
+    "finalproject": "final_project",
+    "finalprojectagent": "final_project",
+}
 
 
 def cli_prompt_approval(interrupt_payload: Dict[str, Any]) -> Dict[str, str]:
@@ -76,6 +107,7 @@ def run_pipeline(
     session_id: Optional[str] = None,
     thread_id: Optional[str] = None,
     approval_callback: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+    stop_after: Optional[str] = None,
 ) -> EngineeringState:
     """Execute the engineering pipeline from initial state through completion or terminal failure.
 
@@ -98,6 +130,7 @@ def run_pipeline(
         thread_id: Optional LangGraph thread_id for checkpoint isolation.
         approval_callback: Callback invoked with interrupt_payload when an interrupt occurs.
             Must return dict with 'decision' and optional 'notes'. If None, defaults to cli_prompt_approval.
+        stop_after: Optional agent or node name after which the pipeline halts early if successful.
 
     Returns:
         The final EngineeringState dictionary.
@@ -129,39 +162,64 @@ def run_pipeline(
     effective_thread_id = thread_id or str(uuid.uuid4())
     config = {"configurable": {"thread_id": effective_thread_id}}
 
+    target_node = None
+    if stop_after is not None:
+        norm_stop = stop_after.lower().strip().replace("-", "_")
+        target_node = STOP_AFTER_NODE_MAP.get(norm_stop) or STOP_AFTER_NODE_MAP.get(norm_stop.replace("_", ""))
+        if not target_node:
+            raise ValueError(f"Unknown agent or node for stop_after: '{stop_after}'")
+
+    stopped_after_reached = False
+
     # (c) Stream initial execution
-    for _ in graph.stream(initial_state, config=config):
-        pass
+    for event in graph.stream(initial_state, config=config):
+        if target_node and target_node in event:
+            node_out = event[target_node]
+            if not node_out.get("human_approval_required") and node_out.get("workflow_status") != STATUS_FAILED:
+                stopped_after_reached = True
+                break
 
     # (d) Detect interrupts and loop until graph terminates
-    while True:
-        snapshot = graph.get_state(config)
-        interrupts = []
-        for task in snapshot.tasks:
-            if getattr(task, "interrupts", None):
-                interrupts.extend(task.interrupts)
+    if not stopped_after_reached:
+        while True:
+            snapshot = graph.get_state(config)
+            interrupts = []
+            for task in snapshot.tasks:
+                if getattr(task, "interrupts", None):
+                    interrupts.extend(task.interrupts)
 
-        if not interrupts:
-            break
+            if not interrupts:
+                break
 
-        interrupt_payload = interrupts[0].value
+            interrupt_payload = interrupts[0].value
 
-        callback = approval_callback or cli_prompt_approval
-        approval_response = callback(interrupt_payload)
+            callback = approval_callback or cli_prompt_approval
+            approval_response = callback(interrupt_payload)
 
-        # (e) Resume with Command
-        resume_cmd = Command(resume=approval_response)
-        for _ in graph.stream(resume_cmd, config=config):
-            pass
+            # (e) Resume with Command
+            resume_cmd = Command(resume=approval_response)
+            for event in graph.stream(resume_cmd, config=config):
+                if target_node and target_node in event:
+                    node_out = event[target_node]
+                    if not node_out.get("human_approval_required") and node_out.get("workflow_status") != STATUS_FAILED:
+                        stopped_after_reached = True
+                        break
+            if stopped_after_reached:
+                break
 
     final_snapshot = graph.get_state(config)
-    final_state = final_snapshot.values
+    final_state = dict(final_snapshot.values)
     final_status = final_state.get("workflow_status")
-    if final_status not in (STATUS_COMPLETED, STATUS_FAILED):
+
+    if stopped_after_reached:
+        final_state["stopped_after"] = stop_after
+
+    if not stopped_after_reached and final_status not in (STATUS_COMPLETED, STATUS_FAILED):
         notes = final_state.get("human_approval_notes") or ""
         raise PipelineIncompleteError(
             f"Pipeline terminated with incomplete workflow_status '{final_status}'. "
-            f"human_approval_notes: {notes}"
+            f"human_approval_notes: {notes}",
+            final_state=final_state,
         )
     return final_state
 

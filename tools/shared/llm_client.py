@@ -76,8 +76,16 @@ class FakeLLMClient:
             raise resp
         if isinstance(resp, response_model):
             return resp
+        if isinstance(resp, BaseModel):
+            try:
+                return response_model.model_validate(resp.model_dump())
+            except Exception:
+                pass
         if isinstance(resp, dict):
-            return response_model(**resp)
+            try:
+                return response_model.model_validate(resp)
+            except Exception:
+                return response_model(**resp)
         raise TypeError(
             f"FakeLLMClient: Unsupported response type '{type(resp).__name__}' for {response_model.__name__}"
         )
