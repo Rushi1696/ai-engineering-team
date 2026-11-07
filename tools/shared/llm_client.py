@@ -10,12 +10,13 @@ Source of truth:
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Protocol, Type, TypeVar, Union
+from typing import Any, Callable, Dict, List, Optional, Protocol, Type, TypeVar, Union, runtime_checkable
 from pydantic import BaseModel
 
 T = TypeVar("T", bound=BaseModel)
 
 
+@runtime_checkable
 class LLMClient(Protocol):
     """Protocol for structured LLM inference across agents."""
 
@@ -86,6 +87,10 @@ def create_provider_client(
     provider: str,
     default_model: Optional[str] = None,
     api_key: Optional[str] = None,
+    budget: Optional[Any] = None,
+    max_output_tokens: Optional[int] = None,
+    timeout_seconds: Optional[float] = None,
+    sleep_fn: Optional[Callable[[float], None]] = None,
 ) -> LLMClient:
     """Factory creating an LLMClient instance for the specified provider ('fake', 'gemini', 'groq').
 
@@ -93,6 +98,10 @@ def create_provider_client(
         provider: Provider name ('fake', 'gemini', 'groq').
         default_model: Optional default model name.
         api_key: Optional explicit API key override.
+        budget: Optional shared RunBudget instance.
+        max_output_tokens: Optional token cap per call.
+        timeout_seconds: Optional request timeout in seconds.
+        sleep_fn: Optional sleep function for backoff.
 
     Returns:
         An instantiated LLMClient implementation.
@@ -103,6 +112,7 @@ def create_provider_client(
     normalized = provider.lower().strip()
     if normalized == "fake":
         return FakeLLMClient()
+
     if normalized == "gemini":
         from tools.shared.gemini_client import GeminiLLMClient
 
@@ -111,7 +121,16 @@ def create_provider_client(
             kwargs["default_model"] = default_model
         if api_key:
             kwargs["api_key"] = api_key
+        if budget is not None:
+            kwargs["budget"] = budget
+        if max_output_tokens is not None:
+            kwargs["max_output_tokens"] = max_output_tokens
+        if timeout_seconds is not None:
+            kwargs["request_timeout"] = timeout_seconds
+        if sleep_fn is not None:
+            kwargs["sleep_fn"] = sleep_fn
         return GeminiLLMClient(**kwargs)
+
     if normalized == "groq":
         from tools.shared.groq_client import GroqLLMClient
 
@@ -120,7 +139,16 @@ def create_provider_client(
             kwargs["default_model"] = default_model
         if api_key:
             kwargs["api_key"] = api_key
+        if budget is not None:
+            kwargs["budget"] = budget
+        if max_output_tokens is not None:
+            kwargs["max_output_tokens"] = max_output_tokens
+        if timeout_seconds is not None:
+            kwargs["request_timeout"] = timeout_seconds
+        if sleep_fn is not None:
+            kwargs["sleep_fn"] = sleep_fn
         return GroqLLMClient(**kwargs)
+
     raise ValueError(
         f"Unsupported LLM provider '{provider}'. Supported options: 'fake', 'gemini', 'groq'"
     )

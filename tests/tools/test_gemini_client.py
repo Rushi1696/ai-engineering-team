@@ -147,3 +147,21 @@ def test_gemini_client_malformed_json_raises():
 
         with pytest.raises(ValueError, match="Failed to validate Gemini response"):
             client.generate_structured(prompt="test", response_model=SampleSchema)
+
+
+def test_gemini_client_passes_timeout_to_http_options():
+    """GeminiLLMClient converts request_timeout to ms in HttpOptions and passes to Client."""
+    with patch("google.genai.Client") as mock_client_cls:
+        client = GeminiLLMClient(api_key="mock-key", request_timeout=45.5)
+        mock_client_cls.assert_called_once()
+        http_options = mock_client_cls.call_args.kwargs.get("http_options")
+        assert http_options is not None
+        assert http_options.timeout == 45500
+
+
+def test_gemini_client_fails_loudly_on_http_options_failure():
+    """GeminiLLMClient does not swallow exceptions raised when creating HttpOptions."""
+    with patch("google.genai.types.HttpOptions", side_effect=RuntimeError("HttpOptions boom")):
+        with pytest.raises(RuntimeError, match="HttpOptions boom"):
+            GeminiLLMClient(api_key="mock-key", request_timeout=30.0)
+

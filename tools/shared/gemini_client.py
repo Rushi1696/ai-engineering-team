@@ -3,7 +3,7 @@ tools/shared/gemini_client.py
 
 Google Gemini API adapter implementing the shared LLMClient protocol.
 Uses the official google-genai SDK for structured JSON generation conforming
-to Pydantic models.
+to Pydantic models with quota protection and budget tracking.
 
 Source of truth:
   - design.md Section 5 (LLM Strategy)
@@ -13,9 +13,12 @@ Source of truth:
 from __future__ import annotations
 
 import os
-from typing import Any, Optional, Type, TypeVar
+import time
+from typing import Any, Callable, Optional, Type, TypeVar
 from dotenv import load_dotenv
 from pydantic import BaseModel
+
+from tools.shared.budget import RunBudget
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -32,6 +35,20 @@ def _clean_json_text(text: str) -> str:
     return cleaned.strip()
 
 
+def _is_retryable_status(exc: Exception) -> bool:
+    """Check if exception corresponds to HTTP 429 (rate limit) or 503 (unavailable)."""
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    if code in (429, 503):
+        return True
+    if code in (400, 401, 403, 404):
+        return False
+
+    msg = str(exc).upper()
+    if any(k in msg for k in ["429", "503", "RESOURCE_EXHAUSTED", "UNAVAILABLE", "RATE_LIMIT", "RATE LIMIT"]):
+        return True
+    return False
+
+
 class GeminiLLMClient:
     """LLMClient implementation backed by Google's Gemini API."""
 
@@ -39,6 +56,10 @@ class GeminiLLMClient:
         self,
         api_key: Optional[str] = None,
         default_model: str = "gemini-3.8-flash",
+        budget: Optional[RunBudget] = None,
+        max_output_tokens: Optional[int] = 8192,
+        request_timeout: Optional[float] = 60.0,
+        sleep_fn: Optional[Callable[[float], None]] = None,
     ) -> None:
         """Initialize Gemini client.
 
@@ -46,6 +67,10 @@ class GeminiLLMClient:
             api_key: Explicit API key. If None, reads from GEMINI_API_KEY env var
                 (after loading .env).
             default_model: Fallback model identifier if not specified at call time.
+            budget: Optional shared RunBudget instance for quota tracking.
+            max_output_tokens: Maximum tokens in generated completion.
+            request_timeout: Request timeout in seconds.
+            sleep_fn: Injected sleep function for backoff (defaults to time.sleep).
 
         Raises:
             ValueError: If no API key is configured.
@@ -60,11 +85,20 @@ class GeminiLLMClient:
 
         self.api_key: str = resolved_key.strip()
         self.default_model: str = default_model
+        self.budget: Optional[RunBudget] = budget
+        self.max_output_tokens: Optional[int] = max_output_tokens
+        self.request_timeout: Optional[float] = request_timeout
+        self.sleep_fn: Callable[[float], None] = sleep_fn if sleep_fn is not None else time.sleep
 
         # Initialize Google GenAI client lazily
         from google import genai
 
-        self._client = genai.Client(api_key=self.api_key)
+        client_kwargs: dict[str, Any] = {"api_key": self.api_key}
+        if self.request_timeout is not None:
+            from google.genai import types
+
+            client_kwargs["http_options"] = types.HttpOptions(timeout=int(self.request_timeout * 1000))
+        self._client = genai.Client(**client_kwargs)
 
     def generate_structured(
         self,
@@ -87,32 +121,62 @@ class GeminiLLMClient:
             An instance of response_model populated from model response.
 
         Raises:
-            RuntimeError: If Gemini API encounters rate limits, timeouts, or API errors.
+            BudgetExceededError: If the run budget is exceeded.
+            RuntimeError: If truncated by max_output_tokens, or on non-retryable API errors.
             ValueError: If the response cannot be parsed or validated against response_model.
         """
         effective_model = model_name or self.default_model
+        prompt_len = len(prompt) + len(system_prompt or "")
 
         from google.genai import types
 
-        config = types.GenerateContentConfig(
-            temperature=temperature,
-            system_instruction=system_prompt,
-            response_mime_type="application/json",
-            response_schema=response_model,
-        )
+        config_kwargs: dict[str, Any] = {
+            "temperature": temperature,
+            "system_instruction": system_prompt,
+            "response_mime_type": "application/json",
+            "response_schema": response_model,
+        }
+        if self.max_output_tokens is not None:
+            config_kwargs["max_output_tokens"] = self.max_output_tokens
 
-        try:
-            response = self._client.models.generate_content(
-                model=effective_model,
-                contents=prompt,
-                config=config,
-            )
-        except Exception as exc:
-            # Mask any potential credential exposure in exception messages
-            err_msg = str(exc)
-            if self.api_key and self.api_key in err_msg:
-                err_msg = err_msg.replace(self.api_key, "[REDACTED]")
-            raise RuntimeError(f"Gemini API generation error ({effective_model}): {err_msg}") from exc
+        config = types.GenerateContentConfig(**config_kwargs)
+
+        max_adapter_retries = 3
+        response = None
+        last_exc: Optional[Exception] = None
+
+        for attempt in range(1, max_adapter_retries + 1):
+            if self.budget is not None:
+                self.budget.check_and_consume("gemini", prompt_len)
+
+            try:
+                response = self._client.models.generate_content(
+                    model=effective_model,
+                    contents=prompt,
+                    config=config,
+                )
+                break
+            except Exception as exc:
+                last_exc = exc
+                if _is_retryable_status(exc) and attempt < max_adapter_retries:
+                    self.sleep_fn(1.0 * attempt)
+                    continue
+
+                err_msg = str(exc)
+                if self.api_key and self.api_key in err_msg:
+                    err_msg = err_msg.replace(self.api_key, "[REDACTED]")
+                raise RuntimeError(f"Gemini API generation error ({effective_model}): {err_msg}") from exc
+
+        # Check for token truncation
+        if response and getattr(response, "candidates", None):
+            candidate = response.candidates[0]
+            finish_reason = getattr(candidate, "finish_reason", None)
+            finish_str = str(finish_reason).upper() if finish_reason else ""
+            if "MAX_TOKENS" in finish_str or "LENGTH" in finish_str:
+                raise RuntimeError(
+                    f"Gemini response was truncated due to max_output_tokens limit ({self.max_output_tokens}). "
+                    "Output is incomplete."
+                )
 
         if getattr(response, "parsed", None) is not None and isinstance(response.parsed, response_model):
             return response.parsed

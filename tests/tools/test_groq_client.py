@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import BaseModel
 
+from tools.shared.budget import RunBudget
 from tools.shared.groq_client import GroqLLMClient
 
 
@@ -133,3 +134,45 @@ def test_groq_client_malformed_json_raises():
 
         with pytest.raises(ValueError, match="Failed to validate Groq response"):
             client.generate_structured(prompt="test", response_model=SampleSchema)
+
+
+def test_groq_client_prompt_len_includes_schema_instruction():
+    """GroqLLMClient accounts for full system content (system_prompt + schema_instruction) in prompt length."""
+    mock_client = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.message.content = json.dumps({"summary": "ok", "score": 10})
+    mock_client.chat.completions.create.return_value = MagicMock(choices=[mock_choice])
+
+    budget = RunBudget(max_total_calls=5)
+    with patch("groq.Groq", return_value=mock_client):
+        client = GroqLLMClient(api_key="mock-key", budget=budget)
+        client._client = mock_client
+
+        user_prompt = "Plan architecture"
+        sys_prompt = "You are a software architect"
+        client.generate_structured(
+            prompt=user_prompt,
+            response_model=SampleSchema,
+            system_prompt=sys_prompt,
+        )
+
+        sent_messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
+        system_msg_content = sent_messages[0]["content"]
+        assert sys_prompt in system_msg_content
+        assert "JSON schema" in system_msg_content
+
+        expected_prompt_len = len(user_prompt) + len(system_msg_content)
+        assert budget.total_prompt_chars == expected_prompt_len
+        assert budget.usage_by_provider["groq"]["prompt_chars"] == expected_prompt_len
+
+        # Test without system_prompt (only schema instruction)
+        client.generate_structured(
+            prompt=user_prompt,
+            response_model=SampleSchema,
+            system_prompt=None,
+        )
+        sent_messages_2 = mock_client.chat.completions.create.call_args.kwargs["messages"]
+        system_msg_content_2 = sent_messages_2[0]["content"]
+        expected_len_2 = len(user_prompt) + len(system_msg_content_2)
+        assert budget.total_prompt_chars == expected_prompt_len + expected_len_2
+

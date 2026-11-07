@@ -177,3 +177,66 @@ def test_smoke_test_unsupported_provider():
     """run_smoke_test returns 1 for unsupported provider."""
     exit_code = run_smoke_test(provider="unsupported")
     assert exit_code == 1
+
+
+def test_create_agents_different_overrides_get_different_clients_with_shared_budget(tmp_path: Path, monkeypatch):
+    """Two agents with different max_output_tokens on same provider get different clients with shared budget."""
+    monkeypatch.setenv("GEMINI_API_KEY", "mock-gemini-key")
+    custom_yaml = tmp_path / "custom_agents.yaml"
+    custom_yaml.write_text(
+        """
+workflow:
+  max_debug_cycles: 10
+  default_provider: "gemini"
+
+agents:
+  product_manager:
+    model: "gemini-3.8-flash"
+    max_output_tokens: 4096
+    timeout_seconds: 60
+  architect:
+    model: "gemini-3.8-flash"
+    max_output_tokens: 8192
+    timeout_seconds: 60
+  task_planner:
+    model: "gemini-3.8-flash"
+    max_output_tokens: 4096
+    timeout_seconds: 60
+  backend:
+    model: "gemini-3.8-flash"
+  frontend:
+    model: "gemini-3.8-flash"
+  qa:
+    model: "gemini-3.8-flash"
+  debug:
+    model: "gemini-3.8-flash"
+  reviewer:
+    model: "gemini-3.8-flash"
+  devops:
+    model: "gemini-3.8-flash"
+  documentation:
+    model: "gemini-3.8-flash"
+  final_project:
+    model: "gemini-3.8-flash"
+""",
+        encoding="utf-8",
+    )
+
+    with patch("google.genai.Client"):
+        agents = create_agents(config_path=custom_yaml)
+        pm_client = agents["product_manager"].llm_client
+        arch_client = agents["architect"].llm_client
+        planner_client = agents["task_planner"].llm_client
+
+        # Different max_output_tokens yield distinct client instances
+        assert pm_client is not arch_client
+        assert pm_client.max_output_tokens == 4096
+        assert arch_client.max_output_tokens == 8192
+
+        # Same max_output_tokens & timeout reuses cached client instance
+        assert pm_client is planner_client
+
+        # Budget object is shared across both different clients
+        assert pm_client.budget is not None
+        assert pm_client.budget is arch_client.budget
+

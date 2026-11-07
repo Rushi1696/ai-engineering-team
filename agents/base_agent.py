@@ -71,6 +71,7 @@ from typing import Any, Dict, Optional
 
 from state.engineering_state import EngineeringState
 from state.models import AgentExecutionMetadata, ErrorRecord
+from tools.shared.budget import BudgetExceededError
 
 # ---------------------------------------------------------------------------
 # Requirement 13 criterion 2: effective max_retries default when no
@@ -228,6 +229,32 @@ class BaseAgent(ABC):
 
         try:
             subclass_update = self.execute(state)
+        except BudgetExceededError as exc:
+            completed_at = _now_iso()
+            error_record = ErrorRecord(
+                error_id=str(uuid.uuid4()),
+                agent=self.agent_name,
+                stage=state.get("workflow_status", ""),
+                error_type="other",
+                message=str(exc),
+                traceback=traceback_module.format_exc(),
+                occurred_at=completed_at,
+                resolved=False,
+                resolution_agent=None,
+                resolution_notes=None,
+            )
+            return {
+                "workflow_status": "failed",
+                "execution_metadata": {
+                    self.agent_name: self._fail_execution_metadata(
+                        started_at, completed_at, exc
+                    )
+                },
+                "total_invocations": state.get("total_invocations", 0) + 1,
+                "current_agent": self.agent_name,
+                "updated_at": completed_at,
+                "errors": [error_record],
+            }
         except Exception as exc:  # noqa: BLE001 -- intentionally broad; see docstring
             return self._build_failure_update(state, started_at, exc)
 

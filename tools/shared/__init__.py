@@ -2,6 +2,7 @@
 tools/shared package.
 """
 
+from tools.shared.budget import BudgetExceededError, BudgetedLLMClient, RunBudget
 from tools.shared.gemini_client import GeminiLLMClient
 from tools.shared.groq_client import GroqLLMClient
 from tools.shared.llm_client import FakeLLMClient, LLMClient, create_provider_client
@@ -12,4 +13,7 @@ __all__ = [
     "GeminiLLMClient",
     "GroqLLMClient",
     "create_provider_client",
+    "BudgetExceededError",
+    "RunBudget",
+    "BudgetedLLMClient",
 ]

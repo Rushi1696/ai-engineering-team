@@ -14,7 +14,7 @@ Source of truth:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Union
+from typing import Any, Callable, Dict, Optional, Tuple, Union
 import yaml
 
 from agents.architect_agent import ArchitectAgent
@@ -37,6 +37,7 @@ from tools.final_project.packager import FakeProjectPackager, ProjectPackager
 from tools.qa.test_runner import FakeTestRunner, TestRunner
 from tools.reviewer.coverage_reader import CoverageReportReader, FakeCoverageReader
 from tools.reviewer.static_analyzer import FakeStaticAnalyzer, StaticAnalysisTool
+from tools.shared.budget import RunBudget
 from tools.shared.llm_client import FakeLLMClient, LLMClient, create_provider_client
 from workflows.constants import AGENT_NODE_ORDER
 
@@ -74,11 +75,12 @@ def create_agents(
     tools: Optional[Dict[str, Any]] = None,
     sleep_fn: Optional[Callable[[float], None]] = None,
     provider: Optional[str] = None,
+    budget: Optional[RunBudget] = None,
 ) -> Dict[str, BaseAgent]:
     """Instantiate and configure all 11 concrete agents in exact AGENT_NODE_ORDER.
 
     Reads model names, max_retries, and timeouts from configs/agents.yaml, injecting
-    dependencies (LLM client, tools, sleep function).
+    dependencies (LLM client, tools, sleep function, shared budget).
 
     Args:
         config_path: Optional custom path to agents.yaml. Defaults to configs/agents.yaml.
@@ -87,6 +89,7 @@ def create_agents(
         tools: Injected dictionary of tools (defaults to fake test doubles for each agent).
         sleep_fn: Injected sleep function for backoff (defaults to a fast no-op lambda).
         provider: Optional global provider override ('fake', 'gemini', 'groq').
+        budget: Optional shared RunBudget instance for rate/quota protection.
 
     Returns:
         Dictionary mapping each node name in AGENT_NODE_ORDER to its concrete agent instance.
@@ -101,15 +104,53 @@ def create_agents(
     provider_cfgs: Dict[str, Any] = configs.get("providers", {})
 
     global_provider = (provider or workflow_cfg.get("default_provider", "fake")).lower().strip()
-    provider_cache: Dict[str, LLMClient] = {}
+
+    # Determine if any agent requires a live provider
+    has_live_provider = global_provider in ("gemini", "groq") or any(
+        (cfg.get("provider") or "").lower().strip() in ("gemini", "groq")
+        for cfg in agent_configs.values()
+    )
+
+    # Establish one shared RunBudget for the entire run
+    if budget is not None:
+        shared_budget: Optional[RunBudget] = budget
+    elif has_live_provider:
+        b_cfg = workflow_cfg.get("budget", {})
+        shared_budget = RunBudget(
+            max_total_calls=b_cfg.get("max_total_calls", 30),
+            max_prompt_chars_per_call=b_cfg.get("max_prompt_chars_per_call", 40000),
+            max_total_prompt_chars=b_cfg.get("max_total_prompt_chars", 150000),
+        )
+    else:
+        shared_budget = None
+
+    effective_sleep_fn = sleep_fn if sleep_fn is not None else (lambda _: None)
+
+    provider_cache: Dict[Tuple[str, Optional[int], Optional[float]], LLMClient] = {}
 
     def _get_client_for_node(node_cfg: Dict[str, Any]) -> LLMClient:
         if llm_client is not None:
             return llm_client
         node_provider = (node_cfg.get("provider") or global_provider).lower().strip()
-        if node_provider not in provider_cache:
-            provider_cache[node_provider] = create_provider_client(node_provider)
-        return provider_cache[node_provider]
+        effective_max_tokens = node_cfg.get("max_output_tokens") or provider_cfgs.get(
+            node_provider, {}
+        ).get("max_output_tokens", 8192)
+        effective_timeout = node_cfg.get("timeout_seconds") or provider_cfgs.get(
+            node_provider, {}
+        ).get("timeout_seconds", 60.0)
+
+        cache_key = (node_provider, effective_max_tokens, effective_timeout)
+        if cache_key not in provider_cache:
+            client = create_provider_client(
+                node_provider,
+                default_model=_get_model_for_node(node_cfg),
+                budget=shared_budget,
+                max_output_tokens=effective_max_tokens,
+                timeout_seconds=effective_timeout,
+                sleep_fn=effective_sleep_fn,
+            )
+            provider_cache[cache_key] = client
+        return provider_cache[cache_key]
 
     def _get_model_for_node(node_cfg: Dict[str, Any]) -> str:
         node_provider = (node_cfg.get("provider") or global_provider).lower().strip()
@@ -127,7 +168,6 @@ def create_agents(
             )
         return node_cfg["model"]
 
-    effective_sleep_fn = sleep_fn if sleep_fn is not None else (lambda _: None)
     tool_map = tools or {}
 
     def _get_cfg(node: str) -> Dict[str, Any]:

@@ -18,8 +18,9 @@ import sys
 import time
 from typing import Any, Dict, List, Optional
 
+from tools.shared.budget import BudgetExceededError, BudgetedLLMClient, RunBudget
 from tools.shared.llm_client import FakeLLMClient
-from workflows.factory import create_agents
+from workflows.factory import create_agents, load_agent_configs
 from workflows.runner import run_pipeline
 
 
@@ -232,6 +233,9 @@ def run_cli(
     max_debug_cycles: int = 10,
     deadline: Optional[str] = None,
     provider: str = "fake",
+    max_total_calls: Optional[int] = None,
+    max_prompt_chars_per_call: Optional[int] = None,
+    max_total_prompt_chars: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Execute the end-to-end multi-agent pipeline via the composition root factory."""
     print("=" * 70)
@@ -245,14 +249,33 @@ def run_cli(
     print(f" User Requirements:   {prompt}")
     print("-" * 70)
 
+    # Establish RunBudget if limits are specified or running a live provider
+    budget: Optional[RunBudget] = None
+    if provider in ("gemini", "groq") or any(
+        lim is not None for lim in (max_total_calls, max_prompt_chars_per_call, max_total_prompt_chars)
+    ):
+        b_cfg = (load_agent_configs(config_path).get("workflow") or {}).get("budget") or {}
+        budget = RunBudget(
+            max_total_calls=max_total_calls if max_total_calls is not None else b_cfg.get("max_total_calls", 30),
+            max_prompt_chars_per_call=max_prompt_chars_per_call
+            if max_prompt_chars_per_call is not None
+            else b_cfg.get("max_prompt_chars_per_call", 40000),
+            max_total_prompt_chars=max_total_prompt_chars
+            if max_total_prompt_chars is not None
+            else b_cfg.get("max_total_prompt_chars", 150000),
+        )
+
     # 1. Initialize agents based on selected provider mode
     if provider == "fake":
         # Scripted fake LLM client covering all forward stages
         scripted_client = FakeLLMClient(responses=build_scripted_llm_responses())
+        if budget is not None:
+            scripted_client = BudgetedLLMClient(inner_client=scripted_client, budget=budget, provider_name="fake")
         agents = create_agents(
             config_path=config_path,
             llm_client=scripted_client,
             sleep_fn=lambda _: None,
+            budget=budget,
         )
     else:
         # Real provider mode: credentials read from environment / .env
@@ -260,6 +283,7 @@ def run_cli(
             config_path=config_path,
             provider=provider,
             sleep_fn=time.sleep,
+            budget=budget,
         )
 
     print(f" [Factory] Initialized {len(agents)} pipeline agents from configuration:")
@@ -269,13 +293,17 @@ def run_cli(
     print(" [Execution] Streaming pipeline execution through LangGraph...")
 
     # 2. Run pipeline to completion
-    final_state = run_pipeline(
-        project_name=project_name,
-        user_input=prompt,
-        agents=agents,
-        pipeline_deadline_at=deadline,
-        max_debug_cycles=max_debug_cycles,
-    )
+    try:
+        final_state = run_pipeline(
+            project_name=project_name,
+            user_input=prompt,
+            agents=agents,
+            pipeline_deadline_at=deadline,
+            max_debug_cycles=max_debug_cycles,
+        )
+    finally:
+        if budget is not None:
+            print(budget.generate_report())
 
     print(" [Execution] Pipeline execution completed!")
     print("=" * 70)
@@ -346,6 +374,24 @@ def main() -> int:
         default=None,
         help="Optional ISO 8601 pipeline deadline timestamp",
     )
+    parser.add_argument(
+        "--max-total-calls",
+        type=int,
+        default=None,
+        help="Maximum total LLM calls across all providers for this run",
+    )
+    parser.add_argument(
+        "--max-prompt-chars-per-call",
+        type=int,
+        default=None,
+        help="Maximum prompt characters allowed in a single LLM call",
+    )
+    parser.add_argument(
+        "--max-total-prompt-chars",
+        type=int,
+        default=None,
+        help="Maximum cumulative prompt characters across all LLM calls",
+    )
 
     args = parser.parse_args()
 
@@ -362,6 +408,9 @@ def main() -> int:
             max_debug_cycles=args.max_debug_cycles,
             deadline=args.deadline,
             provider=args.provider,
+            max_total_calls=args.max_total_calls,
+            max_prompt_chars_per_call=args.max_prompt_chars_per_call,
+            max_total_prompt_chars=args.max_total_prompt_chars,
         )
         return 0 if final_state.get("workflow_status") == "completed" else 1
     except Exception as exc:

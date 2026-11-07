@@ -16,12 +16,20 @@
 workflow:
   max_debug_cycles: 10
   default_provider: "fake"  # Global fallback: "fake", "gemini", or "groq"
+  budget:
+    max_total_calls: 30
+    max_prompt_chars_per_call: 40000
+    max_total_prompt_chars: 150000
 
 providers:
   gemini:
     default_model: "gemini-3.8-flash"
+    max_output_tokens: 8192
+    timeout_seconds: 60
   groq:
     default_model: "openai/gpt-oss-120b"
+    max_output_tokens: 8192
+    timeout_seconds: 60
 
 agents:
   product_manager:
@@ -30,6 +38,7 @@ agents:
     groq_model: "openai/gpt-oss-120b"
     max_retries: 3
     timeout_seconds: 120
+    max_output_tokens: 8192
 
   architect:
     model: "claude-3-5-sonnet-20241022"
@@ -37,6 +46,7 @@ agents:
     groq_model: "openai/gpt-oss-120b"
     max_retries: 3
     timeout_seconds: 180
+    max_output_tokens: 8192
 
   task_planner:
     model: "gpt-4o"
@@ -44,6 +54,7 @@ agents:
     groq_model: "openai/gpt-oss-120b"
     max_retries: 3
     timeout_seconds: 120
+    max_output_tokens: 8192
 
   backend:
     model: "gpt-4o"
@@ -51,6 +62,7 @@ agents:
     groq_model: "openai/gpt-oss-120b"
     max_retries: 3
     timeout_seconds: 300
+    max_output_tokens: 8192
 
   frontend:
     model: "gpt-4o"
@@ -58,6 +70,7 @@ agents:
     groq_model: "openai/gpt-oss-120b"
     max_retries: 3
     timeout_seconds: 300
+    max_output_tokens: 8192
 
   qa:
     model: "gpt-4o-mini"
@@ -65,6 +78,7 @@ agents:
     groq_model: "qwen/qwen3.8-27b"
     max_retries: 3
     timeout_seconds: 300
+    max_output_tokens: 8192
 
   debug:
     model: "claude-3-5-sonnet-20241022"
@@ -72,6 +86,7 @@ agents:
     groq_model: "openai/gpt-oss-120b"
     max_retries: 3
     timeout_seconds: 240
+    max_output_tokens: 8192
 
   reviewer:
     model: "claude-3-5-sonnet-20241022"
@@ -79,6 +94,7 @@ agents:
     groq_model: "openai/gpt-oss-120b"
     max_retries: 3
     timeout_seconds: 360
+    max_output_tokens: 8192
 
   devops:
     model: "gpt-4o"
@@ -86,6 +102,7 @@ agents:
     groq_model: "openai/gpt-oss-120b"
     max_retries: 3
     timeout_seconds: 180
+    max_output_tokens: 8192
 
   documentation:
     model: "claude-3-haiku-20240307"
@@ -93,6 +110,7 @@ agents:
     groq_model: "qwen/qwen3.8-27b"
     max_retries: 3
     timeout_seconds: 240
+    max_output_tokens: 8192
 
   final_project:
     model: "gpt-4o-mini"
@@ -100,3 +118,4 @@ agents:
     groq_model: "qwen/qwen3.8-27b"
     max_retries: 3
     timeout_seconds: 60
+    max_output_tokens: 8192
