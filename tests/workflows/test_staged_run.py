@@ -12,9 +12,11 @@ from unittest.mock import patch
 import pytest
 
 from app import _dump_state_artifacts, build_scripted_llm_responses, main, run_cli
-from state.models import ErrorRecord
+import state.models as sm
+from state.models import CodeArtifact, ErrorRecord
 from tools.shared.llm_client import FakeLLMClient
 from workflows.factory import create_agents
+from workflows.graph import create_default_checkpointer
 from workflows.runner import PipelineIncompleteError, run_pipeline
 
 
@@ -123,6 +125,7 @@ def test_app_dump_state_writes_artifacts_without_keys_or_env(tmp_path: Path, mon
     assert (dump_dir / "requirements.json").exists()
     assert (dump_dir / "architecture.json").exists()
     assert (dump_dir / "task_plan.json").exists()
+    assert (dump_dir / "code_artifacts.json").exists()
     assert (dump_dir / "errors.json").exists()
 
     # Verify no secret appears anywhere in any dumped file
@@ -176,3 +179,82 @@ def test_app_main_stop_after_returns_code_0_and_prints_line(capsys):
 
     captured = capsys.readouterr()
     assert "stopped after TaskPlannerAgent" in captured.out
+
+
+def test_dump_state_code_artifacts_json_only_and_path_traversal_safe(tmp_path: Path):
+    """--dump-state writes code_artifacts.json only; malicious file_paths are not written to disk."""
+    dump_dir = tmp_path / "dump_code"
+    evil_file_outside = tmp_path / "evil.py"
+
+    state = {
+        "code_artifacts": {
+            "evil": CodeArtifact(
+                file_path="../../evil.py",
+                language="python",
+                content="import os; os.system('echo evil')",
+                artifact_type="backend",
+                produced_by="BackendAgent",
+                produced_at="2026-01-01T00:00:00Z",
+                version=1,
+            )
+        }
+    }
+
+    _dump_state_artifacts(state, str(dump_dir))
+
+    code_artifacts_file = dump_dir / "code_artifacts.json"
+    assert code_artifacts_file.exists()
+
+    data = json.loads(code_artifacts_file.read_text(encoding="utf-8"))
+    assert len(data) == 1
+    assert data[0] == {
+        "file_path": "../../evil.py",
+        "language": "python",
+        "artifact_type": "backend",
+        "version": 1,
+        "content": "import os; os.system('echo evil')",
+    }
+
+    # Ensure evil.py was NOT created outside dump_dir
+    assert not evil_file_outside.exists()
+    assert not (tmp_path.parent / "evil.py").exists()
+
+    # Ensure only JSON files exist inside dump_dir
+    for item in dump_dir.iterdir():
+        assert item.is_file()
+        assert item.suffix == ".json"
+
+
+def test_pipeline_run_emits_no_langgraph_unregistered_type_warnings(caplog):
+    """Pipeline execution emits zero 'Deserializing unregistered type' warnings from langgraph."""
+    from langgraph.checkpoint.serde import jsonplus
+    jsonplus._warned_unregistered_types.clear()
+
+    scripted_client = FakeLLMClient(responses=build_scripted_llm_responses())
+    agents = create_agents(llm_client=scripted_client)
+
+    with caplog.at_level("WARNING", logger="langgraph.checkpoint.serde.jsonplus"):
+        final_state = run_pipeline(
+            project_name="Warning Check Test",
+            user_input="Build web application",
+            agents=agents,
+            stop_after="TaskPlannerAgent",
+        )
+
+    assert final_state["workflow_status"] == "planning_complete"
+    serde_warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if "Deserializing unregistered type" in record.getMessage()
+    ]
+    assert serde_warnings == [], f"Unregistered type warnings were emitted: {serde_warnings}"
+
+
+def test_create_default_checkpointer_registers_all_state_models():
+    """create_default_checkpointer registers all state.models in allowed_msgpack_modules."""
+    saver = create_default_checkpointer()
+    allowed = saver.serde._allowed_msgpack_modules
+    assert allowed is not None
+    for model_name in sm.__all__:
+        assert ("state.models", model_name) in allowed
+

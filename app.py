@@ -281,6 +281,32 @@ def _dump_state_artifacts(state: Dict[str, Any], target_dir: str) -> None:
             })
     (dump_path / "errors.json").write_text(json.dumps(sanitized_errors, indent=2), encoding="utf-8")
 
+    # 5. code_artifacts.json: list of file_path, language, artifact_type, version, content
+    if state.get("code_artifacts") is not None:
+        raw_code = state["code_artifacts"]
+        art_items = raw_code.values() if isinstance(raw_code, dict) else raw_code
+        serialized_artifacts = []
+        for art in art_items:
+            if isinstance(art, dict):
+                serialized_artifacts.append({
+                    "file_path": art.get("file_path", ""),
+                    "language": art.get("language", ""),
+                    "artifact_type": art.get("artifact_type", ""),
+                    "version": art.get("version", 1),
+                    "content": art.get("content", ""),
+                })
+            else:
+                serialized_artifacts.append({
+                    "file_path": getattr(art, "file_path", ""),
+                    "language": getattr(art, "language", ""),
+                    "artifact_type": getattr(art, "artifact_type", ""),
+                    "version": getattr(art, "version", 1),
+                    "content": getattr(art, "content", ""),
+                })
+        (dump_path / "code_artifacts.json").write_text(
+            json.dumps(serialized_artifacts, indent=2), encoding="utf-8"
+        )
+
 
 def run_cli(
     project_name: str = "Autonomous E2E Engineering System",

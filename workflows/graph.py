@@ -20,10 +20,12 @@ from typing import Any, Callable, Dict, Optional
 import uuid
 
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from state.engineering_state import EngineeringState
+import state.models as sm
 from state.models import ErrorRecord
 from state.reducers import unresolved_errors
 from workflows.constants import (
@@ -140,6 +142,13 @@ def global_cap_handler_node(state: EngineeringState) -> Dict[str, Any]:
         "human_approval_notes": notes,
         "updated_at": now_iso,
     }
+
+
+def create_default_checkpointer() -> MemorySaver:
+    """Create default MemorySaver checkpointer with state.models allowed for msgpack deserialization."""
+    allowed_models = [getattr(sm, name) for name in sm.__all__]
+    serde = JsonPlusSerializer(allowed_msgpack_modules=allowed_models)
+    return MemorySaver(serde=serde)
 
 
 def build_graph(
@@ -313,10 +322,10 @@ def build_graph(
 
     # -------------------------------------------------------------------------
     # 6. Checkpointer & Compilation (§3.9)
-    # Default to MemorySaver() if none is provided.
+    # Default to MemorySaver() with registered models if none is provided.
     # -------------------------------------------------------------------------
     if checkpointer is None:
-        checkpointer = MemorySaver()
+        checkpointer = create_default_checkpointer()
 
     return builder.compile(checkpointer=checkpointer)
 
@@ -325,4 +334,5 @@ __all__ = [
     "deadline_enforcer_node",
     "global_cap_handler_node",
     "build_graph",
+    "create_default_checkpointer",
 ]

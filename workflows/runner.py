@@ -23,7 +23,7 @@ from workflows.constants import (
     STATUS_COMPLETED,
     STATUS_FAILED,
 )
-from workflows.graph import build_graph
+from workflows.graph import build_graph, create_default_checkpointer
 from workflows.routers import parse_iso_utc
 
 
@@ -156,6 +156,9 @@ def run_pipeline(
         session_id=session_id,
     )
 
+    if checkpointer is None:
+        checkpointer = create_default_checkpointer()
+
     # (b) Compile graph
     graph = build_graph(agents, checkpointer=checkpointer)
 
@@ -227,5 +230,6 @@ def run_pipeline(
 __all__ = [
     "PipelineIncompleteError",
     "cli_prompt_approval",
+    "create_default_checkpointer",
     "run_pipeline",
 ]
