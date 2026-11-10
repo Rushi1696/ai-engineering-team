@@ -16,7 +16,9 @@ from unittest.mock import patch
 import pytest
 
 from agents.base_agent import BaseAgent
+from tools.debug.sandbox import FakeExecutionSandbox, LocalExecutionSandbox
 from tools.final_project.packager import FakeProjectPackager
+from tools.qa.test_runner import FakeTestRunner, PytestTestRunner
 from tools.shared.llm_client import FakeLLMClient
 from workflows.constants import AGENT_NODE_ORDER
 from workflows.factory import create_agents, load_agent_configs
@@ -95,4 +97,51 @@ def test_app_cli_end_to_end_scripted_run():
     with patch("sys.argv", ["app.py", "--project", "CliTestApp"]):
         exit_code = app.main()
         assert exit_code == 0
+
+
+def test_factory_defaults_to_fake_tools_even_for_live_providers(monkeypatch):
+    """FakeTestRunner and FakeExecutionSandbox remain default even for live LLM providers."""
+    monkeypatch.setenv("GEMINI_API_KEY", "mock-key")
+    with patch("google.genai.Client"):
+        agents = create_agents(provider="gemini")
+        assert isinstance(agents["qa"].test_runner, FakeTestRunner)
+        assert isinstance(agents["debug"].sandbox, FakeExecutionSandbox)
+
+
+def test_factory_use_real_tools_injects_separate_qa_and_debug_instances():
+    """use_real_tools=True injects PytestTestRunner for QA and separate LocalExecutionSandbox for Debug."""
+    agents = create_agents(use_real_tools=True)
+    qa_runner = agents["qa"].test_runner
+    dbg_sandbox = agents["debug"].sandbox
+
+    assert isinstance(qa_runner, PytestTestRunner)
+    assert isinstance(qa_runner.sandbox, LocalExecutionSandbox)
+    assert isinstance(dbg_sandbox, LocalExecutionSandbox)
+    assert qa_runner.sandbox is not dbg_sandbox
+
+
+def test_app_cli_tools_flag_default_fake_and_real_prints_warning(capsys, monkeypatch):
+    """app.py defaults to --tools fake for all providers and prints warning only on --tools real."""
+    monkeypatch.setenv("GROQ_API_KEY", "mock-groq-key")
+    captured_calls = []
+
+    def _spy_create_agents(*args, **kwargs):
+        captured_calls.append(kwargs.get("use_real_tools"))
+        return create_agents(llm_client=FakeLLMClient(responses=app.build_scripted_llm_responses()))
+
+    with patch("app.create_agents", side_effect=_spy_create_agents), patch("groq.Groq"):
+        with patch("sys.argv", ["app.py", "--provider", "groq", "--stop-after", "ProductManagerAgent"]):
+            rc = app.main()
+            assert rc == 0
+    out_fake = capsys.readouterr().out
+    assert captured_calls[-1] is False
+    assert "Executing generated code on this machine" not in out_fake
+
+    # Explicit --tools real passes use_real_tools=True and executes real scripted test cleanly
+    with patch("sys.argv", ["app.py", "--provider", "fake", "--tools", "real", "--stop-after", "QAAgent"]):
+        rc_real = app.main()
+        assert rc_real == 0
+    out_real = capsys.readouterr().out
+    assert "Executing generated code on this machine" in out_real
+
 

@@ -30,11 +30,16 @@ from agents.qa_agent import QAAgent
 from agents.reviewer_agent import ReviewerAgent
 from agents.task_planner_agent import TaskPlannerAgent
 from tools.debug.log_parser import ErrorLogParser, RegexLogParser
-from tools.debug.sandbox import CodeExecutionSandbox, FakeExecutionSandbox
+from tools.debug.sandbox import (
+    DEFAULT_SANDBOX_TIMEOUT_SECONDS,
+    CodeExecutionSandbox,
+    FakeExecutionSandbox,
+    LocalExecutionSandbox,
+)
 from tools.devops.yaml_validator import ConfigValidator, FakeConfigValidator
 from tools.documentation.markdown_linter import FakeMarkdownLinter, MarkdownLinter
 from tools.final_project.packager import FakeProjectPackager, ProjectPackager
-from tools.qa.test_runner import FakeTestRunner, TestRunner
+from tools.qa.test_runner import FakeTestRunner, PytestTestRunner, TestRunner
 from tools.reviewer.coverage_reader import CoverageReportReader, FakeCoverageReader
 from tools.reviewer.static_analyzer import FakeStaticAnalyzer, StaticAnalysisTool
 from tools.shared.budget import RunBudget
@@ -76,6 +81,7 @@ def create_agents(
     sleep_fn: Optional[Callable[[float], None]] = None,
     provider: Optional[str] = None,
     budget: Optional[RunBudget] = None,
+    use_real_tools: bool = False,
 ) -> Dict[str, BaseAgent]:
     """Instantiate and configure all 11 concrete agents in exact AGENT_NODE_ORDER.
 
@@ -177,9 +183,21 @@ def create_agents(
             )
         return agent_configs[node]
 
-    # Resolve required tools, defaulting to fake doubles
-    test_runner: TestRunner = tool_map.get("test_runner") or FakeTestRunner()
-    sandbox: CodeExecutionSandbox = tool_map.get("sandbox") or FakeExecutionSandbox()
+    test_timeout_seconds = float(
+        workflow_cfg.get("test_timeout_seconds", DEFAULT_SANDBOX_TIMEOUT_SECONDS)
+    )
+
+    # Resolve required tools, defaulting to fake doubles unless use_real_tools=True
+    test_runner: TestRunner = tool_map.get("test_runner") or (
+        PytestTestRunner(sandbox=LocalExecutionSandbox(timeout_seconds=test_timeout_seconds))
+        if use_real_tools
+        else FakeTestRunner()
+    )
+    sandbox: CodeExecutionSandbox = tool_map.get("sandbox") or (
+        LocalExecutionSandbox(timeout_seconds=test_timeout_seconds)
+        if use_real_tools
+        else FakeExecutionSandbox()
+    )
     log_parser: ErrorLogParser = tool_map.get("log_parser") or RegexLogParser()
     static_analyzer: StaticAnalysisTool = tool_map.get("static_analyzer") or FakeStaticAnalyzer()
     coverage_reader: CoverageReportReader = tool_map.get("coverage_reader") or FakeCoverageReader()

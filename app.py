@@ -323,18 +323,27 @@ def run_cli(
     max_total_prompt_chars: Optional[int] = None,
     stop_after: Optional[str] = None,
     dump_state: Optional[str] = None,
+    tools: str = "fake",
 ) -> Dict[str, Any]:
     """Execute the end-to-end multi-agent pipeline via the composition root factory."""
+    if tools not in ("fake", "real"):
+        raise ValueError(f"Unsupported tools mode '{tools}'. Expected 'fake' or 'real'.")
+    use_real_tools = tools == "real"
+
     print("=" * 70)
     print(" AI ENGINEERING TEAM - AUTONOMOUS MULTI-AGENT PIPELINE")
     print("=" * 70)
     print(f" Project Name:        {project_name}")
     print(f" Provider:            {provider}")
+    print(f" Tools:               {tools}")
     print(f" Max Debug Cycles:    {max_debug_cycles}")
     if deadline:
         print(f" Pipeline Deadline:   {deadline}")
     print(f" User Requirements:   {prompt}")
     print("-" * 70)
+    if use_real_tools:
+        print(" WARNING: Executing generated code on this machine")
+        print("-" * 70)
 
     # Establish RunBudget if limits are specified or running a live provider
     budget: Optional[RunBudget] = None
@@ -363,6 +372,7 @@ def run_cli(
             llm_client=scripted_client,
             sleep_fn=lambda _: None,
             budget=budget,
+            use_real_tools=use_real_tools,
         )
     else:
         # Real provider mode: credentials read from environment / .env
@@ -371,6 +381,7 @@ def run_cli(
             provider=provider,
             sleep_fn=time.sleep,
             budget=budget,
+            use_real_tools=use_real_tools,
         )
 
     print(f" [Factory] Initialized {len(agents)} pipeline agents from configuration:")
@@ -506,6 +517,12 @@ def main() -> int:
         default=None,
         help="Directory path to export generated state artifacts as JSON files (defaults to 'runs/' if flag is passed)",
     )
+    parser.add_argument(
+        "--tools",
+        choices=["fake", "real"],
+        default="fake",
+        help="Tool mode for test runner / sandbox: 'fake' (default for all providers) or 'real'",
+    )
 
     args = parser.parse_args()
 
@@ -527,6 +544,7 @@ def main() -> int:
             max_total_prompt_chars=args.max_total_prompt_chars,
             stop_after=args.stop_after,
             dump_state=args.dump_state,
+            tools=args.tools,
         )
         if final_state.get("stopped_after"):
             print(f"stopped after {final_state['stopped_after']}")
