@@ -140,6 +140,28 @@ class DebugAgent(BaseAgent):
         raw_text = filepath.read_text(encoding="utf-8")
         return strip_metadata_header(raw_text)
 
+    def _format_architecture(self, arch: Any) -> str:
+        """Format SystemArchitecture concisely for prompt interpolation."""
+        if not arch:
+            return "Not provided"
+        if not hasattr(arch, "overview"):
+            return str(arch)
+        sections = [f"Architecture Overview: {arch.overview}"]
+        if getattr(arch, "technology_stack", None):
+            tech_lines = [f"- {comp}: {tech}" for comp, tech in arch.technology_stack.items()]
+            sections.append("Technology Stack:\n" + "\n".join(tech_lines))
+        if getattr(arch, "api_specifications", None):
+            api_lines = [
+                f"- {spec.get('method', 'GET')} {spec.get('endpoint', '/')}: {spec.get('description', '')}"
+                for spec in arch.api_specifications
+            ]
+            sections.append("API Specifications:\n" + "\n".join(api_lines))
+        if getattr(arch, "database_design", None):
+            sections.append(
+                f"Database Design Entities: {', '.join(arch.database_design.keys())}"
+            )
+        return "\n\n".join(sections)
+
     def _get_effective_max_retries(self, state: EngineeringState) -> int:
         """Resolve effective max retries ceiling for DebugAgent."""
         max_retries_map = state.get("max_retries") or {}
@@ -255,11 +277,7 @@ class DebugAgent(BaseAgent):
             )
 
         arch = state.get("architecture")
-        arch_str = (
-            str(arch.model_dump())
-            if hasattr(arch, "model_dump")
-            else str(arch or "Not provided")
-        )
+        arch_str = self._format_architecture(arch)
 
         task_plan = state.get("task_plan")
         tasks_summary = "None"

@@ -11,9 +11,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import BaseModel
 
+from agents.debug_agent import DebugAgent
 from agents.product_manager_agent import ProductManagerAgent
 from state.engineering_state import create_initial_state
-from state.models import ProductRequirements
+from state.models import ErrorRecord, ProductRequirements
 from tools.shared.budget import BudgetExceededError, BudgetedLLMClient, RunBudget
 from tools.shared.gemini_client import GeminiLLMClient
 from tools.shared.groq_client import GroqLLMClient
@@ -355,3 +356,47 @@ def test_budget_stop_through_compiled_graph():
     assert len(final_state["errors"]) == 1
     assert final_state["errors"][0].error_type == "other"
     assert "Run budget exceeded" in final_state["errors"][0].message
+
+
+def test_budget_exhaustion_stops_debug_agent_without_entering_retry_loop():
+    """BudgetExceededError stops DebugAgent immediately with workflow_status='failed' without entering retry loop."""
+    budget = RunBudget(max_total_prompt_chars=0)
+    mock_sleep = MagicMock()
+    mock_sandbox = MagicMock()
+
+    budgeted_client = BudgetedLLMClient(
+        inner_client=FakeLLMClient(),
+        budget=budget,
+        provider_name="fake",
+    )
+
+    agent = DebugAgent(
+        model_name="test-model",
+        llm_client=budgeted_client,
+        sandbox=mock_sandbox,
+        sleep_fn=mock_sleep,
+    )
+
+    state = create_initial_state(project_name="DebugBudgetTest", user_input="Fix issue")
+    error_rec = ErrorRecord(
+        error_id="err-001",
+        agent="QAAgent",
+        stage="qa_in_progress",
+        error_type="unhandled_exception",
+        message="assert 'created_at' in data failed",
+        traceback="Traceback...",
+        occurred_at="2026-01-01T00:00:00Z",
+    )
+    state["errors"] = [error_rec]
+    state["current_debug_target"] = "err-001"
+
+    result = agent.invoke(state)
+
+    assert result["workflow_status"] == "failed"
+    assert mock_sleep.call_count == 0
+    assert result.get("human_approval_required") is not True
+    assert len(result["errors"]) == 1
+    assert result["errors"][0].error_type == "other"
+    assert "Run budget exceeded" in result["errors"][0].message
+    assert result["execution_metadata"]["DebugAgent"].status == "failed"
+

@@ -541,3 +541,198 @@ def test_task_planner_invoke_lifecycle_success_and_exhaustion():
     assert update_fail["execution_metadata"]["TaskPlannerAgent"].status == "failed"
     assert update_fail["total_invocations"] == 1
     assert "workflow_status" not in update_fail
+
+
+def test_task_planner_rejects_frontend_tasks_when_backend_owns_all_app_work():
+    """TaskPlanner rejects FrontendAgent tasks when constraints assign all app work to BackendAgent."""
+    plan_with_frontend = _sample_valid_task_plan_dict()
+    # Plan has TASK-002 assigned to FrontendAgent
+
+    plan_all_backend = {
+        "tasks": [
+            {
+                "task_id": "TASK-001",
+                "title": "Setup app and database in app.py",
+                "description": "Initialize Flask and SQLite.",
+                "assigned_agent": "BackendAgent",
+                "priority": 10,
+                "dependencies": [],
+                "acceptance_criteria": ["Database schema created"],
+                "status": "pending",
+            },
+            {
+                "task_id": "TASK-002",
+                "title": "Implement endpoints and HTML UI in app.py",
+                "description": "Serve UI and endpoints from app.py.",
+                "assigned_agent": "BackendAgent",
+                "priority": 20,
+                "dependencies": ["TASK-001"],
+                "acceptance_criteria": ["API and UI work"],
+                "status": "pending",
+            },
+            {
+                "task_id": "TASK-003",
+                "title": "Write unit tests in test_app.py",
+                "description": "Test all endpoints with pytest.",
+                "assigned_agent": "QAAgent",
+                "priority": 30,
+                "dependencies": ["TASK-002"],
+                "acceptance_criteria": ["All tests pass"],
+                "status": "pending",
+            },
+        ],
+        "execution_order": ["TASK-001", "TASK-002", "TASK-003"],
+    }
+
+    client = FakeLLMClient(responses=[plan_with_frontend, plan_all_backend])
+    agent = TaskPlannerAgent(model_name="test-model", llm_client=client, sleep_fn=lambda s: None)
+
+    reqs = _sample_valid_requirements()
+    reqs.constraints = [
+        "All backend code, including the HTML/JS page, must reside in a single file named app.py."
+    ]
+
+    state = create_initial_state(project_name="SingleFileApp", user_input="Build minimal app with one app file")
+    state["requirements"] = reqs
+    state["architecture"] = _sample_valid_architecture()
+
+    result = agent.execute(state)
+    assert result["workflow_status"] == STATUS_PLANNING_COMPLETE
+    assert len(client.calls) == 2
+    # Verify retry prompt contains explicit ownership rejection
+    retry_prompt = client.calls[1]["prompt"]
+    assert "FrontendAgent must receive 0 tasks" in retry_prompt
+    # Final plan tasks have 0 FrontendAgent tasks
+    for task in result["task_plan"].tasks:
+        assert task.assigned_agent != "FrontendAgent"
+
+
+def test_task_planner_rejects_forbidden_integration_and_e2e_testing_tasks():
+    """TaskPlanner rejects forbidden integration and e2e testing tasks when prohibited by constraints."""
+    forbidden_plan = {
+        "tasks": [
+            {
+                "task_id": "TASK-001",
+                "title": "Implement backend",
+                "description": "Create API endpoints.",
+                "assigned_agent": "BackendAgent",
+                "priority": 10,
+                "dependencies": [],
+                "acceptance_criteria": ["Endpoints return 200"],
+                "status": "pending",
+            },
+            {
+                "task_id": "TASK-002",
+                "title": "Validate full application integration and concurrency",
+                "description": "Perform end-to-end integration and concurrency testing.",
+                "assigned_agent": "QAAgent",
+                "priority": 20,
+                "dependencies": ["TASK-001"],
+                "acceptance_criteria": ["Simulated concurrent requests pass"],
+                "status": "pending",
+            },
+        ],
+        "execution_order": ["TASK-001", "TASK-002"],
+    }
+
+    valid_unit_plan = {
+        "tasks": [
+            {
+                "task_id": "TASK-001",
+                "title": "Implement backend",
+                "description": "Create API endpoints.",
+                "assigned_agent": "BackendAgent",
+                "priority": 10,
+                "dependencies": [],
+                "acceptance_criteria": ["Endpoints return 200"],
+                "status": "pending",
+            },
+            {
+                "task_id": "TASK-002",
+                "title": "Write unit tests for API endpoints",
+                "description": "Create unit tests in test_app.py using test client.",
+                "assigned_agent": "QAAgent",
+                "priority": 20,
+                "dependencies": ["TASK-001"],
+                "acceptance_criteria": ["Unit tests pass"],
+                "status": "pending",
+            },
+        ],
+        "execution_order": ["TASK-001", "TASK-002"],
+    }
+
+    client = FakeLLMClient(responses=[forbidden_plan, valid_unit_plan])
+    agent = TaskPlannerAgent(model_name="test-model", llm_client=client, sleep_fn=lambda s: None)
+
+    reqs = _sample_valid_requirements()
+    reqs.constraints = [
+        "Do not use Docker, CI pipelines, authentication, HTTPS, load or end-to-end testing, or additional metrics.",
+        "no integration or concurrency tests",
+    ]
+
+    state = create_initial_state(project_name="NoIntegrationApp", user_input="no load or end-to-end tests")
+    state["requirements"] = reqs
+    state["architecture"] = _sample_valid_architecture()
+
+    result = agent.execute(state)
+    assert result["workflow_status"] == STATUS_PLANNING_COMPLETE
+    assert len(client.calls) == 2
+    retry_prompt = client.calls[1]["prompt"]
+    assert "explicitly prohibited by constraints" in retry_prompt
+
+
+def test_task_planner_enforces_maximum_task_count():
+    """TaskPlanner enforces maximum task count constraint and rejects plans exceeding limit."""
+    too_many_tasks = [
+        {
+            "task_id": f"TASK-00{i}",
+            "title": f"Task {i}",
+            "description": f"Description for task {i}",
+            "assigned_agent": "BackendAgent",
+            "priority": i * 10,
+            "dependencies": [f"TASK-00{i-1}"] if i > 1 else [],
+            "acceptance_criteria": [f"Criteria {i}"],
+            "status": "pending",
+        }
+        for i in range(1, 8)  # 7 tasks
+    ]
+    plan_7_tasks = {
+        "tasks": too_many_tasks,
+        "execution_order": [f"TASK-00{i}" for i in range(1, 8)],
+    }
+
+    within_limit_tasks = [
+        {
+            "task_id": f"TASK-00{i}",
+            "title": f"Task {i}",
+            "description": f"Description for task {i}",
+            "assigned_agent": "BackendAgent",
+            "priority": i * 10,
+            "dependencies": [f"TASK-00{i-1}"] if i > 1 else [],
+            "acceptance_criteria": [f"Criteria {i}"],
+            "status": "pending",
+        }
+        for i in range(1, 5)  # 4 tasks
+    ]
+    plan_4_tasks = {
+        "tasks": within_limit_tasks,
+        "execution_order": [f"TASK-00{i}" for i in range(1, 5)],
+    }
+
+    client = FakeLLMClient(responses=[plan_7_tasks, plan_4_tasks])
+    agent = TaskPlannerAgent(model_name="test-model", llm_client=client, sleep_fn=lambda s: None)
+
+    reqs = _sample_valid_requirements()
+    reqs.constraints = ["Planning must consist of no more than six tasks."]
+
+    state = create_initial_state(project_name="LimitedApp", user_input="Plan at most 6 tasks total.")
+    state["requirements"] = reqs
+    state["architecture"] = _sample_valid_architecture()
+
+    result = agent.execute(state)
+    assert result["workflow_status"] == STATUS_PLANNING_COMPLETE
+    assert len(client.calls) == 2
+    retry_prompt = client.calls[1]["prompt"]
+    assert "exceeding maximum allowed limit of 6 tasks" in retry_prompt
+    assert len(result["task_plan"].tasks) <= 6
+

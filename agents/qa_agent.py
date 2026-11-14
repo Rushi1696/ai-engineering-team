@@ -180,6 +180,28 @@ class QAAgent(BaseAgent):
             raise FileNotFoundError(f"QAAgent prompt template not found: {path}")
         return strip_metadata_header(path.read_text(encoding="utf-8"))
 
+    def _format_architecture(self, arch: Any) -> str:
+        """Format SystemArchitecture concisely for prompt interpolation."""
+        if not arch:
+            return "None"
+        if not hasattr(arch, "overview"):
+            return str(arch)
+        sections = [f"Architecture Overview: {arch.overview}"]
+        if getattr(arch, "technology_stack", None):
+            tech_lines = [f"- {comp}: {tech}" for comp, tech in arch.technology_stack.items()]
+            sections.append("Technology Stack:\n" + "\n".join(tech_lines))
+        if getattr(arch, "api_specifications", None):
+            api_lines = [
+                f"- {spec.get('method', 'GET')} {spec.get('endpoint', '/')}: {spec.get('description', '')}"
+                for spec in arch.api_specifications
+            ]
+            sections.append("API Specifications:\n" + "\n".join(api_lines))
+        if getattr(arch, "database_design", None):
+            sections.append(
+                f"Database Design Entities: {', '.join(arch.database_design.keys())}"
+            )
+        return "\n\n".join(sections)
+
     def execute(self, state: EngineeringState) -> Dict[str, Any]:
         """Execute QAAgent business logic against current EngineeringState.
 
@@ -235,11 +257,7 @@ class QAAgent(BaseAgent):
             for t in task_plan.tasks
         )
 
-        arch_str = (
-            str(architecture.model_dump())
-            if hasattr(architecture, "model_dump")
-            else str(architecture)
-        )
+        arch_str = self._format_architecture(architecture)
         req_str = "\n".join(f"- {r}" for r in requirements.functional_requirements)
         user_prompt = user_prompt_template.format(
             project_name=state.get("project_name", "AI Project"),

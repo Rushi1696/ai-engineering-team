@@ -706,3 +706,55 @@ def test_backend_validator_syntax_error_triggers_retry_loop():
     assert "Syntax error in app/models/user.py:" in second_prompt
 
 
+def test_backend_prompt_includes_database_design_fields_and_created_at():
+    """BackendAgent prompt formatting preserves Architect database fields and API responses including created_at."""
+    arch = _sample_valid_architecture()
+    arch.database_design = {
+        "todos": {
+            "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
+            "title": "TEXT NOT NULL",
+            "description": "TEXT",
+            "completed": "INTEGER DEFAULT 0",
+            "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+        }
+    }
+    arch.api_specifications = [
+        {
+            "endpoint": "/todos",
+            "method": "POST",
+            "description": "Create a new todo",
+            "parameters": {"title": "string", "description": "string"},
+            "responses": {"201": {"id": "int", "title": "str", "created_at": "str"}},
+        }
+    ]
+
+    client = FakeLLMClient(responses=[_sample_valid_backend_artifacts_dict()])
+    agent = BackendAgent(model_name="test-model", llm_client=client)
+
+    state = create_initial_state(project_name="TodoApp", user_input="Build todo app")
+    state["requirements"] = _sample_valid_requirements()
+    state["architecture"] = arch
+    state["task_plan"] = _sample_valid_task_plan()
+
+    agent.execute(state)
+
+    first_prompt = client.calls[0]["prompt"]
+    assert "Database Design (Tables, Columns, Types, Defaults):" in first_prompt
+    assert "created_at" in first_prompt
+    assert "TIMESTAMP DEFAULT CURRENT_TIMESTAMP" in first_prompt
+    assert "todos" in first_prompt
+    assert "INTEGER PRIMARY KEY AUTOINCREMENT" in first_prompt
+    assert "/todos" in first_prompt
+    assert "responses" in first_prompt.lower()
+
+    # Also check backend system prompt instructions
+    sys_prompt = agent._load_prompt("system_prompt.md")
+    assert "Follow the Architect's database schema exactly" in sys_prompt
+    assert "DEFAULT CURRENT_TIMESTAMP" in sys_prompt
+    assert "parameterized SQL" in sys_prompt
+    assert "validate JSON request bodies" in sys_prompt
+    assert "reject invalid boolean values" in sys_prompt
+    assert "Do NOT write test files" in sys_prompt
+
+
+

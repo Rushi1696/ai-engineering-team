@@ -19,6 +19,7 @@ Source of truth:
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 import time
 from typing import Any, Callable, Dict, List, Optional, Set, Union
@@ -177,14 +178,22 @@ class BackendAgent(BaseAgent):
             tech_lines = [f"- {comp}: {tech}" for comp, tech in arch.technology_stack.items()]
             sections.append("Technology Stack:\n" + "\n".join(tech_lines))
         if arch.api_specifications:
-            api_lines = [
-                f"- {spec.get('method', 'GET')} {spec.get('endpoint', '/')}: {spec.get('description', '')}"
-                for spec in arch.api_specifications
-            ]
+            api_lines = []
+            for spec in arch.api_specifications:
+                method = spec.get("method", "GET")
+                endpoint = spec.get("endpoint", "/")
+                desc = spec.get("description", "")
+                line = f"- {method} {endpoint}: {desc}"
+                if spec.get("parameters"):
+                    line += f"\n  Parameters: {json.dumps(spec['parameters'])}"
+                if spec.get("responses"):
+                    line += f"\n  Responses: {json.dumps(spec['responses'])}"
+                api_lines.append(line)
             sections.append("API Specifications:\n" + "\n".join(api_lines))
         if arch.database_design:
             sections.append(
-                f"Database Design Entities: {', '.join(arch.database_design.keys())}"
+                f"Database Design (Tables, Columns, Types, Defaults):\n"
+                f"{json.dumps(arch.database_design, indent=2)}"
             )
         if arch.security_architecture:
             sec_lines = [f"- {k}: {v}" for k, v in arch.security_architecture.items()]

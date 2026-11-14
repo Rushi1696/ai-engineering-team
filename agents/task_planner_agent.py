@@ -20,8 +20,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 import time
-from typing import Any, Callable, Dict, Optional, Set, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Union
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -42,6 +43,116 @@ STATUS_PLANNING_COMPLETE = "planning_complete"
 
 _DEFAULT_PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts" / "task_planner"
 _VALID_ASSIGNED_AGENTS: Set[str] = {"BackendAgent", "FrontendAgent", "QAAgent"}
+_DASH_RE = re.compile(r"[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]")
+
+_NUM_WORDS: Dict[str, int] = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+    "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
+    "nineteen": 19, "twenty": 20,
+}
+
+
+def _normalize_text(text: str) -> str:
+    """Normalize hyphens and lowercase text for robust constraint matching."""
+    return _DASH_RE.sub("-", text or "").lower()
+
+
+def _parse_num(tok: str) -> Optional[int]:
+    tok = tok.strip().lower()
+    if tok.isdigit():
+        return int(tok)
+    return _NUM_WORDS.get(tok)
+
+
+def _extract_max_task_count(
+    constraints: Optional[List[str]] = None,
+    user_input: str = "",
+) -> Optional[int]:
+    """Extract maximum task count limit if specified in constraints or user input."""
+    combined_texts: List[str] = []
+    if constraints:
+        combined_texts.extend(constraints)
+    if user_input:
+        combined_texts.append(user_input)
+
+    full_text = _normalize_text(" \n ".join(combined_texts))
+    patterns = [
+        r"(?:plan\s+)?(?:at\s+most|maximum(?:\s+of)?|max(?:\s+of)?|no\s+more\s+than|up\s+to|limit\s+(?:to\s+)?)\s*(\d+|[a-z]+)\s*tasks?",
+        r"(\d+|[a-z]+)\s*tasks?\s*(?:maximum|max|at\s+most|total)",
+        r"tasks?\s*(?:limit|maximum|max):\s*(\d+|[a-z]+)",
+    ]
+
+    found: List[int] = []
+    for pat in patterns:
+        for match in re.finditer(pat, full_text):
+            val = _parse_num(match.group(1))
+            if val is not None and val > 0:
+                found.append(val)
+
+    return min(found) if found else None
+
+
+def _is_all_application_work_backend(
+    constraints: Optional[List[str]] = None,
+    user_input: str = "",
+) -> bool:
+    """Detect if all application work (including UI/HTML/JS) is assigned to BackendAgent."""
+    combined_texts: List[str] = []
+    if constraints:
+        combined_texts.extend(constraints)
+    if user_input:
+        combined_texts.append(user_input)
+
+    full_text = _normalize_text(" \n ".join(combined_texts))
+    patterns = [
+        r"\bone\s+app\s+file\b",
+        r"\bsingle\s+app\s+file\b",
+        r"\bsingle[- ]file\s+(?:app|application|architecture|deployment)\b",
+        r"\ball\s+backend\s+code,\s*including\s+(?:the\s+)?(?:html|js|javascript)",
+        r"\b(?:html|js|javascript).*\b(?:served\s+from|within|in)\s+app\.py\b",
+        r"\bapp\.py\s+including\s+(?:html|js|javascript)",
+        r"(?:entire|all)\s+app(?:lication)?(?:\.py)?.*(?:backend|app\.py)",
+        r"(?:backend|app\.py).*(?:entire|all)\s+app(?:lication)?",
+        r"(?:assign|belongs?)\s+(?:all|entire).*(?:app|application).*backend",
+    ]
+
+    return any(re.search(pat, full_text) for pat in patterns)
+
+
+def _forbidden_test_types(
+    constraints: Optional[List[str]] = None,
+    user_input: str = "",
+) -> Set[str]:
+    """Detect explicitly prohibited testing types from constraints or user input."""
+    combined_texts: List[str] = []
+    if constraints:
+        combined_texts.extend(constraints)
+    if user_input:
+        combined_texts.append(user_input)
+
+    full_text = _normalize_text(" \n ".join(combined_texts))
+    forbidden: Set[str] = set()
+
+    negation_patterns = [
+        r"(?:no|not?|without|avoid|prohibit\w*|forbid\w*|do\s+not\s+(?:use|include|write|create))\s+([^.\n;]+)",
+        r"([^.\n;]+)\s+(?:are|is)\s+(?:strictly\s+)?(?:prohibited|forbidden|disallowed|not\s+allowed)",
+    ]
+
+    for pat in negation_patterns:
+        for match in re.finditer(pat, full_text):
+            clause = match.group(1)
+            if re.search(r"\b(?:integration)\b", clause):
+                forbidden.add("integration")
+            if re.search(r"\b(?:end[- ]to[- ]end|e2e)\b", clause):
+                forbidden.add("end-to-end")
+            if re.search(r"\b(?:load)\b", clause):
+                forbidden.add("load")
+            if re.search(r"\b(?:concurrency|concurrent)\b", clause):
+                forbidden.add("concurrency")
+
+    return forbidden
 
 
 def _now_iso() -> str:
@@ -149,7 +260,12 @@ class TaskPlannerAgent(BaseAgent):
             sections.append(f"Deployment Model: {arch.deployment_model}")
         return "\n\n".join(sections)
 
-    def _validate_task_plan(self, plan: TaskPlan) -> None:
+    def _validate_task_plan(
+        self,
+        plan: TaskPlan,
+        constraints: Optional[List[str]] = None,
+        user_input: str = "",
+    ) -> None:
         """Validate all required fields of TaskPlan and its tasks (Req 5, design.md §1.3)."""
         if not plan.tasks or not isinstance(plan.tasks, list) or len(plan.tasks) == 0:
             raise ValueError("TaskPlan.tasks must contain at least one task.")
@@ -205,6 +321,51 @@ class TaskPlannerAgent(BaseAgent):
                     raise ValueError(
                         f"Task '{task.task_id}' is ordered before its dependency '{dep}' in execution_order."
                     )
+
+        # Max task count constraint enforcement
+        max_tasks = _extract_max_task_count(constraints=constraints, user_input=user_input)
+        if max_tasks is not None and len(plan.tasks) > max_tasks:
+            raise ValueError(
+                f"TaskPlan contains {len(plan.tasks)} tasks, exceeding maximum allowed limit of {max_tasks} tasks."
+            )
+
+        # Explicit agent ownership: single file / all application work in BackendAgent
+        if _is_all_application_work_backend(constraints=constraints, user_input=user_input):
+            frontend_tasks = [t for t in plan.tasks if t.assigned_agent == "FrontendAgent"]
+            if frontend_tasks:
+                bad_ids = [t.task_id for t in frontend_tasks]
+                raise ValueError(
+                    f"FrontendAgent must receive 0 tasks because all application work is assigned to BackendAgent. "
+                    f"Found tasks assigned to FrontendAgent: {', '.join(bad_ids)}."
+                )
+
+        # Prohibited testing types constraint enforcement
+        forbidden_tests = _forbidden_test_types(constraints=constraints, user_input=user_input)
+        if forbidden_tests:
+            for task in plan.tasks:
+                task_text = _normalize_text(
+                    f"{task.title} {task.description} {' '.join(task.acceptance_criteria)}"
+                )
+                for ftype in forbidden_tests:
+                    if ftype == "integration" and re.search(r"\bintegration\b", task_text):
+                        raise ValueError(
+                            f"Task '{task.task_id}' specifies integration testing, which is explicitly prohibited by constraints."
+                        )
+                    if ftype == "end-to-end" and re.search(r"\b(?:end[- ]to[- ]end|e2e)\b", task_text):
+                        raise ValueError(
+                            f"Task '{task.task_id}' specifies end-to-end testing, which is explicitly prohibited by constraints."
+                        )
+                    if ftype == "load" and re.search(r"\bload\s+(?:test|testing|tests)\b", task_text):
+                        raise ValueError(
+                            f"Task '{task.task_id}' specifies load testing, which is explicitly prohibited by constraints."
+                        )
+                    if ftype == "concurrency" and (
+                        re.search(r"\bconcurrency\b", task_text)
+                        or re.search(r"\bconcurrent\s+(?:requests|testing|tests)\b", task_text)
+                    ):
+                        raise ValueError(
+                            f"Task '{task.task_id}' specifies concurrency testing, which is explicitly prohibited by constraints."
+                        )
 
     def execute(self, state: EngineeringState) -> Dict[str, Any]:
         """Execute task plan generation with internal retry loop.
@@ -393,7 +554,11 @@ class TaskPlannerAgent(BaseAgent):
                     produced_at=completed_at,
                     version=version,
                 )
-                self._validate_task_plan(plan_obj)
+                self._validate_task_plan(
+                    plan_obj,
+                    constraints=requirements.constraints if requirements else None,
+                    user_input=state.get("user_input") or "",
+                )
             except Exception as exc:
                 last_error = exc
                 is_validation = isinstance(exc, ValueError)
