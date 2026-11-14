@@ -199,32 +199,61 @@ def validate_relative_artifact_path(raw_path: str) -> Tuple[str, ...]:
 def prepare_validated_artifacts(
     code_artifacts: Dict[str, CodeArtifact],
     test_artifacts: Optional[Dict[str, TestArtifact]] = None,
-) -> Tuple[List[Tuple[Tuple[str, ...], str, str]], List[Tuple[Tuple[str, ...], str, str]]]:
-    """Validate all code and test artifact paths and reject case-insensitive duplicates."""
-    seen_lower: Dict[str, str] = {}
-    validated_code: List[Tuple[Tuple[str, ...], str, str]] = []
+) -> Tuple[List[Tuple[Tuple[str, ...], str, str]], List[Tuple[Tuple[str, ...], str, str]], List[str]]:
+    """Validate all code and test artifact paths, dropping code artifacts that clash with test artifacts.
+
+    When a path (case-insensitive, normalized) exists in both code_artifacts and test_artifacts,
+    the test artifact wins and the code artifact is dropped for that run only (state is unmodified).
+    Duplicates within code_artifacts or within test_artifacts are rejected with ValueError.
+    """
+    seen_test_lower: Dict[str, str] = {}
     validated_tests: List[Tuple[Tuple[str, ...], str, str]] = []
 
-    def _collect(items: Iterable[Any], target_list: List[Tuple[Tuple[str, ...], str, str]]) -> None:
-        for art in items:
-            raw_path = _artifact_field(art, "file_path", "")
-            parts = validate_relative_artifact_path(raw_path)
-            rel_posix = "/".join(parts)
-            lower_key = rel_posix.lower()
-            if lower_key in seen_lower:
-                raise ValueError(
-                    f"Duplicate relative artifact path (case-insensitive): "
-                    f"{rel_posix!r} conflicts with {seen_lower[lower_key]!r}"
-                )
-            seen_lower[lower_key] = rel_posix
-            content = _artifact_field(art, "content", "")
-            if not isinstance(content, str):
-                content = str(content)
-            target_list.append((parts, rel_posix, content))
+    for art in (test_artifacts or {}).values():
+        raw_path = _artifact_field(art, "file_path", "")
+        parts = validate_relative_artifact_path(raw_path)
+        rel_posix = "/".join(parts)
+        lower_key = rel_posix.lower()
+        if lower_key in seen_test_lower:
+            raise ValueError(
+                f"Duplicate relative test artifact path (case-insensitive): "
+                f"{rel_posix!r} conflicts with {seen_test_lower[lower_key]!r}"
+            )
+        seen_test_lower[lower_key] = rel_posix
+        content = _artifact_field(art, "content", "")
+        if not isinstance(content, str):
+            content = str(content)
+        validated_tests.append((parts, rel_posix, content))
 
-    _collect((code_artifacts or {}).values(), validated_code)
-    _collect((test_artifacts or {}).values(), validated_tests)
-    return validated_code, validated_tests
+    seen_code_lower: Dict[str, str] = {}
+    validated_code: List[Tuple[Tuple[str, ...], str, str]] = []
+    notes: List[str] = []
+
+    for art in (code_artifacts or {}).values():
+        raw_path = _artifact_field(art, "file_path", "")
+        parts = validate_relative_artifact_path(raw_path)
+        rel_posix = "/".join(parts)
+        lower_key = rel_posix.lower()
+        if lower_key in seen_code_lower:
+            raise ValueError(
+                f"Duplicate relative code artifact path (case-insensitive): "
+                f"{rel_posix!r} conflicts with {seen_code_lower[lower_key]!r}"
+            )
+        seen_code_lower[lower_key] = rel_posix
+
+        if lower_key in seen_test_lower:
+            test_path = seen_test_lower[lower_key]
+            notes.append(
+                f"[sandbox] test file {test_path} replaced code artifact with the same path"
+            )
+            continue
+
+        content = _artifact_field(art, "content", "")
+        if not isinstance(content, str):
+            content = str(content)
+        validated_code.append((parts, rel_posix, content))
+
+    return validated_code, validated_tests, notes
 
 
 def _match_forbidden_module(module_name: str) -> Optional[str]:
@@ -576,7 +605,7 @@ class LocalExecutionSandbox:
         command: Optional[str] = None,
     ) -> SandboxExecutionResult:
         """Validate artifacts, check AST safety, materialize into temp dir, and run pytest."""
-        validated_code, validated_tests = prepare_validated_artifacts(
+        validated_code, validated_tests, notes = prepare_validated_artifacts(
             code_artifacts=code_artifacts,
             test_artifacts=test_artifacts,
         )
@@ -585,6 +614,8 @@ class LocalExecutionSandbox:
             violations = scan_python_ast_safety([*validated_code, *validated_tests])
             if violations:
                 reason = "AST safety tripwire refused execution:\n" + "\n".join(violations)
+                if notes:
+                    reason = "\n".join(notes) + "\n" + reason
                 capped = cap_head_tail_text(reason, self.max_output_chars)
                 return SandboxExecutionResult(
                     passed=False,
@@ -599,6 +630,8 @@ class LocalExecutionSandbox:
         cmd = self._build_command(validated_tests=validated_tests, explicit_command=command)
         if cmd is None:
             msg = "No Python test files to execute"
+            if notes:
+                msg = "\n".join(notes) + "\n" + msg
             return SandboxExecutionResult(
                 passed=False,
                 exit_code=5,
@@ -616,7 +649,23 @@ class LocalExecutionSandbox:
             self._write_validated_files(root_resolved, validated_tests)
 
             scrubbed_env = build_scrubbed_env(root_resolved)
-            return self._run_subprocess(cmd=cmd, cwd=root_resolved, env=scrubbed_env, start_time=start)
+            res = self._run_subprocess(cmd=cmd, cwd=root_resolved, env=scrubbed_env, start_time=start)
+            if notes:
+                note_block = "\n".join(notes)
+                new_output = f"{note_block}\n{res.output}" if res.output else note_block
+                capped_output = cap_head_tail_text(new_output, self.max_output_chars)
+                new_stdout = f"{note_block}\n{res.stdout}" if res.stdout else note_block
+                return SandboxExecutionResult(
+                    passed=res.passed,
+                    exit_code=res.exit_code,
+                    stdout=new_stdout,
+                    stderr=res.stderr,
+                    output=capped_output,
+                    duration_seconds=res.duration_seconds,
+                    timed_out=res.timed_out,
+                    refused=res.refused,
+                )
+            return res
         finally:
             _cleanup_temp_dir(temp_dir)
 
@@ -647,6 +696,8 @@ class LocalExecutionSandbox:
             "-rA",
             "--tb=short",
             "--no-header",
+            "-o",
+            "python_files=test_*.py *_test.py *test*.py *test*.PY *.py *.PY",
             "-p",
             "no:cacheprovider",
             "-p",

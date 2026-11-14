@@ -475,23 +475,62 @@ def test_real_pytest_runner_rejects_path_traversal_and_special_windows_paths(bad
     assert set(Path(tempfile.gettempdir()).glob("ai_eng_sandbox_*")) == before_dirs
 
 
+def test_real_pytest_runner_rejects_within_set_duplicate_paths():
+    """Duplicate relative paths within code_artifacts or within test_artifacts raise ValueError."""
+    before_dirs = set(Path(tempfile.gettempdir()).glob("ai_eng_sandbox_*"))
+    runner = PytestTestRunner()
+
+    # 1. Within code_artifacts
+    with pytest.raises(ValueError, match="Duplicate relative code artifact path"):
+        runner.run_tests(
+            {"c1": _code("app.py", "x = 1\n"), "c2": _code("APP.PY", "x = 2\n")},
+            {"t": _test("test_other.py", "def test_other(): assert True\n")},
+        )
+
+    # 2. Within test_artifacts
+    with pytest.raises(ValueError, match="Duplicate relative test artifact path"):
+        runner.run_tests(
+            {"c": _code("app.py", "x = 1\n")},
+            {"t1": _test("test_app.py", "def test_1(): assert True\n"), "t2": _test(r"TEST_APP.PY", "def test_2(): assert True\n")},
+        )
+    assert set(Path(tempfile.gettempdir()).glob("ai_eng_sandbox_*")) == before_dirs
+
+
 @pytest.mark.parametrize(
     "code_path,test_path",
     [
-        ("app.py", "APP.PY"),
-        ("src/utils.py", r"SRC\UTILS.py"),
+        ("test_app.py", "TEST_APP.py"),
+        ("src/test_utils.py", r"SRC\test_utils.py"),
     ],
 )
-def test_real_pytest_runner_rejects_case_insensitive_duplicate_paths(code_path: str, test_path: str):
-    """Duplicate relative paths differing only by case/separators raise ValueError with nothing written."""
-    before_dirs = set(Path(tempfile.gettempdir()).glob("ai_eng_sandbox_*"))
+def test_real_pytest_runner_cross_set_duplicate_runs_test_version_with_note(code_path: str, test_path: str):
+    """When a path exists in both code and test artifacts, test artifact wins and note is emitted."""
     runner = PytestTestRunner()
-    with pytest.raises(ValueError, match="Duplicate relative artifact path"):
-        runner.run_tests(
-            {"c": _code(code_path, "x = 1\n")},
-            {"t": _test(test_path, "def test_t(): assert True\n")},
-        )
-    assert set(Path(tempfile.gettempdir()).glob("ai_eng_sandbox_*")) == before_dirs
+    # Code version would fail test run if executed; test version passes
+    code_artifacts = {"c": _code(code_path, "def test_clash(): assert False\n")}
+    test_artifacts = {"t": _test(test_path, "def test_clash(): assert True\n")}
+
+    res = runner.run_tests(code_artifacts, test_artifacts)
+    assert res.passed is True
+    assert res.passed_tests == 1
+    # Normalized test path used in note
+    from tools.debug.sandbox import validate_relative_artifact_path
+    expected_path = "/".join(validate_relative_artifact_path(test_path))
+    expected_note = f"[sandbox] test file {expected_path} replaced code artifact with the same path"
+    assert expected_note in res.output
+
+
+def test_debug_sandbox_call_with_cross_set_clash_runs_test_version_and_emits_note():
+    """Debug sandbox direct execution with cross-set clash drops code artifact and emits note."""
+    sandbox = LocalExecutionSandbox()
+    code_artifacts = {"c": _code("test_app.py", "def test_run(): assert False\n")}
+    test_artifacts = {"t": _test("test_app.py", "def test_run(): assert True\n")}
+
+    res = sandbox.execute_in_sandbox(code_artifacts=code_artifacts, test_artifacts=test_artifacts)
+    assert res.passed is True
+    assert "[sandbox] test file test_app.py replaced code artifact with the same path" in res.output
+    assert "[sandbox] test file test_app.py replaced code artifact with the same path" in res.stdout
+
 
 
 def test_real_pytest_runner_timeout_kills_process_tree_deletes_tempdir_and_returns_failed_result():
