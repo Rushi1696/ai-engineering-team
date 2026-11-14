@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 import re
-from typing import Any, Dict, List, Optional, Protocol, Set, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Protocol, Set, Tuple, Union
 
 from state.models import CodeArtifact, TestArtifact
 from tools.debug.sandbox import (
@@ -23,6 +23,7 @@ from tools.debug.sandbox import (
     DEFAULT_SANDBOX_TIMEOUT_SECONDS,
     CodeExecutionSandbox,
     LocalExecutionSandbox,
+    scan_python_ast_safety,
 )
 
 _MODULE_NOT_FOUND_RE = re.compile(
@@ -114,6 +115,29 @@ class FakeTestRunner:
         if isinstance(next_res, dict):
             return TestRunResult(**next_res)
         return next_res
+
+
+def scan_test_artifacts_safety(
+    test_artifacts: Union[Iterable[TestArtifact], Dict[str, TestArtifact], List[Dict[str, Any]]],
+) -> List[str]:
+    """Scan test artifacts with AST tripwire for forbidden imports or calls."""
+    items = (
+        test_artifacts.values()
+        if isinstance(test_artifacts, dict)
+        else test_artifacts
+    )
+    payload: List[Tuple[Tuple[str, ...], str, str]] = []
+    for art in items:
+        if isinstance(art, dict):
+            file_path = art.get("file_path", "")
+            content = art.get("content", "")
+        else:
+            file_path = getattr(art, "file_path", "")
+            content = getattr(art, "content", "")
+        norm_path = (file_path or "").strip().replace("\\", "/")
+        path_parts = tuple(p for p in norm_path.split("/") if p)
+        payload.append((path_parts, norm_path, content))
+    return scan_python_ast_safety(payload)
 
 
 def _artifact_rel_path(artifact: Any) -> str:

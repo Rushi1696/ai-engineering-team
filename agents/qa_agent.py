@@ -40,7 +40,11 @@ from state.models import (
     TestArtifact,
     TestPlan,
 )
-from tools.qa.test_runner import TestRunner, TestRunResult
+from tools.qa.test_runner import (
+    TestRunner,
+    TestRunResult,
+    scan_test_artifacts_safety,
+)
 from tools.shared.llm_client import LLMClient
 
 # Local status constants satisfying design.md Section 6 Rule 3 (no workflows/ imports)
@@ -276,6 +280,15 @@ class QAAgent(BaseAgent):
 
                 for art in qa_result.test_artifacts:
                     art.content = validate_and_sanitize_python_artifact(art.file_path, art.content)
+
+                violations = scan_test_artifacts_safety(qa_result.test_artifacts)
+                if violations:
+                    violation_lines = "\n".join(violations)
+                    raise ValueError(
+                        f"{violation_lines}\n"
+                        "Do not use shutil.rmtree, os.remove, subprocess, socket or similar. "
+                        "The sandbox is already a fresh temp dir. Use pytest tmp_path for temporary files."
+                    )
 
                 break
 

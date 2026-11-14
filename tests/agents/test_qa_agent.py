@@ -18,7 +18,7 @@ from state.models import (
     TestArtifact,
     TestPlan,
 )
-from tools.qa.test_runner import FakeTestRunner, TestRunResult
+from tools.qa.test_runner import FakeTestRunner, PytestTestRunner, TestRunResult
 from tools.shared.llm_client import FakeLLMClient
 
 # Suppress PytestCollectionWarning on model classes
@@ -608,5 +608,99 @@ def test_qa_validator_syntax_error_triggers_retry_loop():
     second_prompt = client.calls[1]["prompt"]
     assert "Syntax error in tests/test_auth.py:" in second_prompt
     assert len(sleeps) == 0  # validation errors do not sleep
+
+
+def test_qa_ast_tripwire_in_test_artifacts_triggers_revision_and_recovers():
+    """Forbidden import or call in generated tests raises ValueError and recovers on retry."""
+    unsafe_resp = _sample_valid_qa_result_dict()
+    unsafe_resp["test_artifacts"][0]["content"] = (
+        "import os\n"
+        "import subprocess\n\n"
+        "def test_cleanup():\n"
+        "    os.remove('test.db')\n"
+    )
+
+    clean_resp = _sample_valid_qa_result_dict()
+    clean_resp["test_artifacts"][0]["content"] = (
+        "def test_cleanup(tmp_path):\n"
+        "    db_file = tmp_path / 'test.db'\n"
+        "    assert True\n"
+    )
+
+    client = FakeLLMClient(responses=[unsafe_resp, clean_resp])
+    runner = FakeTestRunner()
+    sleeps = []
+    agent = QAAgent(
+        model_name="test-model",
+        llm_client=client,
+        test_runner=runner,
+        sleep_fn=sleeps.append,
+    )
+
+    state = create_initial_state(project_name="OrderApp", user_input="Build test suite")
+    state["requirements"] = _sample_valid_requirements()
+    state["architecture"] = _sample_valid_architecture()
+    state["task_plan"] = _sample_valid_task_plan()
+    state["code_artifacts"] = _sample_valid_code_artifacts()
+
+    result = agent.execute(state)
+    assert result["workflow_status"] == STATUS_QA_COMPLETE
+    assert len(client.calls) == 2
+    assert len(sleeps) == 0  # validation failure does not backoff-sleep
+
+    second_prompt = client.calls[1]["prompt"]
+    assert "forbidden import 'subprocess'" in second_prompt
+    assert "forbidden call 'os.remove()'" in second_prompt
+    assert "Do not use shutil.rmtree, os.remove, subprocess, socket or similar." in second_prompt
+    assert "Use pytest tmp_path for temporary files." in second_prompt
+    # TestRunner was only called once, on the successful revision
+    assert len(runner.calls) == 1
+
+
+def test_qa_ast_tripwire_in_code_artifacts_routes_to_debug():
+    """Forbidden import in CODE artifacts trips sandbox AST safety and routes to DebugAgent."""
+    clean_test_resp = _sample_valid_qa_result_dict()
+    clean_test_resp["test_artifacts"][0]["content"] = "def test_ok(): assert True\n"
+
+    client = FakeLLMClient(responses=[clean_test_resp])
+    # Real test runner that runs LocalExecutionSandbox AST tripwire
+    runner = PytestTestRunner()
+    sleeps = []
+    agent = QAAgent(
+        model_name="test-model",
+        llm_client=client,
+        test_runner=runner,
+        sleep_fn=sleeps.append,
+    )
+
+    unsafe_code = {
+        "src/server.py": CodeArtifact(
+            file_path="src/server.py",
+            language="python",
+            content="import subprocess\n\ndef run_cmd():\n    subprocess.run(['echo', 'unsafe'])\n",
+            artifact_type="backend",
+            produced_by="BackendAgent",
+            produced_at="2026-01-01T00:00:00Z",
+            version=1,
+        )
+    }
+
+    state = create_initial_state(project_name="OrderApp", user_input="Build test suite")
+    state["requirements"] = _sample_valid_requirements()
+    state["architecture"] = _sample_valid_architecture()
+    state["task_plan"] = _sample_valid_task_plan()
+    state["code_artifacts"] = unsafe_code
+
+    result = agent.execute(state)
+    # Generated test was clean, so LLM was called only once (no validation retry loop)
+    assert len(client.calls) == 1
+    # Code artifact tripwire routes directly to DebugAgent
+    assert result["workflow_status"] == STATUS_DEBUG_REQUIRED
+    assert result["next_agent"] == "DebugAgent"
+    assert len(result["errors"]) == 1
+    assert "test_failure: failing tests: [ast_tripwire]" in result["errors"][0].message
+    assert "AST safety tripwire refused execution" in result["errors"][0].message
+    assert "src/server.py:1: forbidden import 'subprocess'" in result["errors"][0].message
+
 
 

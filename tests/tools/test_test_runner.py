@@ -587,3 +587,18 @@ def test_real_pytest_runner_ast_tripwire_blocks_forbidden_imports_and_calls(snip
     popen_spy.assert_not_called()
     assert res.passed is False
     assert "AST safety tripwire refused execution" in res.output
+
+
+def test_scan_test_artifacts_safety_detects_forbidden_test_code():
+    """scan_test_artifacts_safety detects forbidden imports and calls in test artifacts."""
+    from tools.qa.test_runner import scan_test_artifacts_safety
+
+    arts = [
+        _test("tests/test_ok.py", "def test_ok(tmp_path): assert True"),
+        _test("tests/test_bad.py", "import subprocess\nimport os\n\ndef test_bad():\n    os.remove('x')\n"),
+    ]
+    violations = scan_test_artifacts_safety(arts)
+    assert len(violations) == 2
+    assert "tests/test_bad.py:1: forbidden import 'subprocess'" in violations[0]
+    assert "tests/test_bad.py:5: forbidden call 'os.remove()'" in violations[1]
+

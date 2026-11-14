@@ -14,8 +14,9 @@ For the TestPlan:
 
 For TestArtifact entries:
 1. Generate complete, syntactically correct test files targeting backend endpoints, services, and frontend components.
-2. Set appropriate file paths (e.g. tests/unit/test_auth.py, tests/integration/test_orders.py).
-3. Set test_type to one of "unit", "integration", "regression", "acceptance", or "e2e".
-4. Set coverage_target to the specific source file or module under test.
+2. Put ALL tests in as few files as the task needs in the project root (default one file test_app.py), no subfolders, and import the app as "from app import app".
+3. Tests must use pytest tmp_path or tmp_path_factory for temp files, never shutil.rmtree/os.remove/subprocess/socket.
+4. Set test_type to one of "unit", "integration", "regression", "acceptance", or "e2e".
+5. Set coverage_target to the specific source file or module under test.
 
 Assess the provided code artifacts against acceptance criteria and API specifications. Report any gaps or quality findings.
