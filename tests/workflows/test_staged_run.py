@@ -13,7 +13,7 @@ import pytest
 
 from app import _dump_state_artifacts, build_scripted_llm_responses, main, run_cli
 import state.models as sm
-from state.models import CodeArtifact, ErrorRecord
+from state.models import CodeArtifact, ErrorRecord, TestArtifact as StateTestArtifact
 from tools.shared.llm_client import FakeLLMClient
 from workflows.factory import create_agents
 from workflows.graph import create_default_checkpointer
@@ -127,6 +127,7 @@ def test_app_dump_state_writes_artifacts_without_keys_or_env(tmp_path: Path, mon
     assert (dump_dir / "task_plan.json").exists()
     assert (dump_dir / "code_artifacts.json").exists()
     assert (dump_dir / "errors.json").exists()
+    assert (dump_dir / "state_summary.json").exists()
 
     # Verify no secret appears anywhere in any dumped file
     for file_path in dump_dir.glob("*.json"):
@@ -257,4 +258,55 @@ def test_create_default_checkpointer_registers_all_state_models():
     assert allowed is not None
     for model_name in sm.__all__:
         assert ("state.models", model_name) in allowed
+
+
+def test_dump_state_writes_test_artifacts_and_summary_safely(tmp_path: Path):
+    """--dump-state writes test_artifacts.json and state_summary.json without path traversal or leaks."""
+    dump_dir = tmp_path / "dump_tests"
+    evil_test_outside = tmp_path / "evil_test.py"
+
+    state = {
+        "workflow_status": "qa_complete",
+        "total_invocations": 6,
+        "retry_counts": {"BackendAgent": 1, "QAAgent": 0},
+        "forward_stage": 6,
+        "total_debug_cycles": 2,
+        "test_artifacts": {
+            "tests/test_api.py": StateTestArtifact(
+                file_path="../../evil_test.py",
+                content="def test_evil(): assert True",
+                test_type="unit",
+                produced_by="QAAgent",
+                produced_at="2026-01-01T00:00:00Z",
+                version=1,
+            )
+        },
+    }
+
+    _dump_state_artifacts(state, str(dump_dir))
+
+    # 1. test_artifacts.json checks
+    test_artifacts_file = dump_dir / "test_artifacts.json"
+    assert test_artifacts_file.exists()
+    test_data = json.loads(test_artifacts_file.read_text(encoding="utf-8"))
+    assert len(test_data) == 1
+    assert test_data[0] == {
+        "file_path": "../../evil_test.py",
+        "test_type": "unit",
+        "content": "def test_evil(): assert True",
+    }
+    assert not evil_test_outside.exists()
+    assert not (tmp_path.parent / "evil_test.py").exists()
+
+    # 2. state_summary.json checks
+    summary_file = dump_dir / "state_summary.json"
+    assert summary_file.exists()
+    summary_data = json.loads(summary_file.read_text(encoding="utf-8"))
+    assert summary_data == {
+        "workflow_status": "qa_complete",
+        "total_invocations": 6,
+        "retry_counts": {"BackendAgent": 1, "QAAgent": 0},
+        "forward_stage": 6,
+        "total_debug_cycles": 2,
+    }
 

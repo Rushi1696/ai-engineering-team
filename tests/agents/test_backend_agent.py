@@ -655,3 +655,54 @@ def test_backend_input_state_task_plan_unchanged():
     assert input_tasks["TASK-001"].status == "pending"
     assert state["task_plan"] is initial_plan
 
+
+def test_backend_validator_unescapes_escaped_newlines_on_valid_ast():
+    """BackendAgent unescapes single-line content with >= 2 literal \\n when AST parses."""
+    escaped_content = (
+        "from fastapi import APIRouter\\n\\n"
+        "router = APIRouter()\\n\\n"
+        "@router.get(\\\"/health\\\")\\n"
+        "def health():\\n"
+        "\\treturn {\\\"status\\\": \\\"ok\\\"}\\n"
+    )
+    resp = _sample_valid_backend_artifacts_dict()
+    resp["artifacts"][1]["content"] = escaped_content
+
+    client = FakeLLMClient(responses=[resp])
+    agent = BackendAgent(model_name="test-model", llm_client=client)
+
+    state = create_initial_state(project_name="OrderApp", user_input="Build backend")
+    state["requirements"] = _sample_valid_requirements()
+    state["architecture"] = _sample_valid_architecture()
+    state["task_plan"] = _sample_valid_task_plan()
+
+    result = agent.execute(state)
+    auth_art = result["code_artifacts"]["app/routers/auth.py"]
+    assert "\n" in auth_art.content
+    assert '\treturn {"status": "ok"}' in auth_art.content
+    assert result["workflow_status"] == STATUS_BACKEND_COMPLETE
+
+
+def test_backend_validator_syntax_error_triggers_retry_loop():
+    """BackendAgent triggers retry loop on SyntaxError with file path, line, and message."""
+    broken_resp = _sample_valid_backend_artifacts_dict()
+    broken_resp["artifacts"][0]["content"] = "from sqlalchemy import Column\nclass User(\n    pass\n"
+
+    valid_resp = _sample_valid_backend_artifacts_dict()
+
+    client = FakeLLMClient(responses=[broken_resp, valid_resp])
+    agent = BackendAgent(model_name="test-model", llm_client=client, sleep_fn=lambda s: None)
+
+    state = create_initial_state(project_name="OrderApp", user_input="Build backend")
+    state["requirements"] = _sample_valid_requirements()
+    state["architecture"] = _sample_valid_architecture()
+    state["task_plan"] = _sample_valid_task_plan()
+
+    result = agent.execute(state)
+    assert result["workflow_status"] == STATUS_BACKEND_COMPLETE
+    assert len(client.calls) == 2
+    # Verify retry prompt contains syntax error info
+    second_prompt = client.calls[1]["prompt"]
+    assert "Syntax error in app/models/user.py:" in second_prompt
+
+

@@ -23,7 +23,12 @@ import uuid
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
-from agents.base_agent import DEFAULT_MAX_RETRIES, BaseAgent, strip_metadata_header
+from agents.base_agent import (
+    DEFAULT_MAX_RETRIES,
+    BaseAgent,
+    strip_metadata_header,
+    validate_and_sanitize_python_artifact,
+)
 from state.engineering_state import EngineeringState
 from state.models import (
     AgentExecutionMetadata,
@@ -268,6 +273,9 @@ class QAAgent(BaseAgent):
                 # Validate non-empty test artifacts and test plan
                 if not qa_result.test_artifacts or not qa_result.test_plan.strategy.strip():
                     raise ValueError("QAAgent: Generated test_plan or test_artifacts is empty")
+
+                for art in qa_result.test_artifacts:
+                    art.content = validate_and_sanitize_python_artifact(art.file_path, art.content)
 
                 break
 

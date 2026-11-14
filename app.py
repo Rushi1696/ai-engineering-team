@@ -307,6 +307,40 @@ def _dump_state_artifacts(state: Dict[str, Any], target_dir: str) -> None:
             json.dumps(serialized_artifacts, indent=2), encoding="utf-8"
         )
 
+    # 6. test_artifacts.json: list of file_path, test_type, content
+    if state.get("test_artifacts") is not None:
+        raw_tests = state["test_artifacts"]
+        test_items = raw_tests.values() if isinstance(raw_tests, dict) else raw_tests
+        serialized_test_artifacts = []
+        for art in test_items:
+            if isinstance(art, dict):
+                serialized_test_artifacts.append({
+                    "file_path": art.get("file_path", ""),
+                    "test_type": art.get("test_type", ""),
+                    "content": art.get("content", ""),
+                })
+            else:
+                serialized_test_artifacts.append({
+                    "file_path": getattr(art, "file_path", ""),
+                    "test_type": getattr(art, "test_type", ""),
+                    "content": getattr(art, "content", ""),
+                })
+        (dump_path / "test_artifacts.json").write_text(
+            json.dumps(serialized_test_artifacts, indent=2), encoding="utf-8"
+        )
+
+    # 7. state_summary.json: workflow_status, total_invocations, retry_counts, forward_stage, total_debug_cycles
+    summary_data = {
+        "workflow_status": state.get("workflow_status"),
+        "total_invocations": state.get("total_invocations") if state.get("total_invocations") is not None else 0,
+        "retry_counts": state.get("retry_counts") if state.get("retry_counts") is not None else {},
+        "forward_stage": state.get("forward_stage") if state.get("forward_stage") is not None else 0,
+        "total_debug_cycles": state.get("total_debug_cycles") if state.get("total_debug_cycles") is not None else 0,
+    }
+    (dump_path / "state_summary.json").write_text(
+        json.dumps(summary_data, indent=2), encoding="utf-8"
+    )
+
 
 def run_cli(
     project_name: str = "Autonomous E2E Engineering System",

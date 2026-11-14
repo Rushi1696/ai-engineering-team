@@ -13,5 +13,6 @@ For each assigned backend task:
 4. Ensure code is modular, robust, well-structured, and production-ready.
 5. Respect task dependencies: code for dependent tasks must integrate seamlessly with artifacts produced for prerequisite tasks.
 6. Fulfill all acceptance criteria specified for each task.
+7. When a file already exists in existing artifacts, return the COMPLETE updated file and preserve every existing route, error handler and behavior. Never remove working code.
 
 Return a structured list of CodeArtifact entries representing all necessary files to complete the assigned tasks.

@@ -62,6 +62,7 @@ Design notes:
 
 from __future__ import annotations
 
+import ast
 import re
 import traceback as traceback_module
 import uuid
@@ -101,6 +102,56 @@ def _now_iso() -> str:
     ever needed.
     """
     return datetime.now(timezone.utc).isoformat()
+
+
+_UNESCAPE_MAP = {
+    "n": "\n",
+    "t": "\t",
+    '"': '"',
+    "\\": "\\",
+}
+_UNESCAPE_RE = re.compile(r'\\([nt"\\])')
+
+
+def validate_and_sanitize_python_artifact(file_path: str, content: str) -> str:
+    """Validate python source with ast.parse, unescaping if LLM returned escaped newlines.
+
+    For every .py artifact:
+      a) If the content has ZERO real newlines and 2 or more literal backslash-n sequences,
+         unescape \\n, \\t, \\" and \\\\ once and use the result if it parses.
+      b) Otherwise on SyntaxError raise ValueError with file path, line and the message
+         so the retry loop sends it to the revision prompt.
+    """
+    norm_path = (file_path or "").strip()
+    if not norm_path.lower().endswith(".py"):
+        return content
+
+    target_content = content
+    if "\n" not in content and content.count(r"\n") >= 2:
+        for candidate in (
+            _UNESCAPE_RE.sub(lambda m: _UNESCAPE_MAP[m.group(1)], content),
+            (
+                content.replace(r"\n", "\n")
+                .replace(r"\t", "\t")
+                .replace(r'\"', '"')
+                .replace(r"\\", "\\")
+            ),
+        ):
+            try:
+                ast.parse(candidate, filename=norm_path)
+                return candidate
+            except SyntaxError:
+                target_content = candidate
+
+    try:
+        ast.parse(target_content, filename=norm_path)
+    except SyntaxError as exc:
+        line = exc.lineno if exc.lineno is not None else 1
+        raise ValueError(
+            f"Syntax error in {norm_path}:{line}: {exc.msg}"
+        ) from exc
+
+    return target_content
 
 
 class BaseAgent(ABC):

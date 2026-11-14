@@ -13,5 +13,6 @@ For each assigned frontend task:
 4. Ensure all client-side API integrations align precisely with SystemArchitecture api_specifications and existing backend endpoints.
 5. Fulfill all UI/UX user stories and acceptance criteria specified for each task.
 6. Ensure code is accessible, modular, production-ready, and responsive.
+7. When a file already exists in existing artifacts, return the COMPLETE updated file and preserve every existing route, error handler and behavior. Never remove working code.
 
 Return a structured list of CodeArtifact entries representing all necessary files to complete the assigned tasks.

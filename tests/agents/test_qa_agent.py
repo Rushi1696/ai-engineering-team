@@ -550,3 +550,63 @@ def test_qa_test_runner_exception_routes_to_exhaustion_without_retry():
     assert len(client.calls) == 1
     assert len(sleeps) == 0
 
+
+def test_qa_validator_unescapes_escaped_newlines_on_valid_test_ast():
+    """QAAgent unescapes single-line test artifact with >= 2 literal \\n when AST parses."""
+    escaped_test = (
+        "import pytest\\n\\n"
+        "def test_login():\\n"
+        "\\tresp = {\\\"status\\\": \\\"ok\\\"}\\n"
+        "\\tassert resp[\\\"status\\\"] == \\\"ok\\\"\\n"
+    )
+    resp = _sample_valid_qa_result_dict()
+    resp["test_artifacts"][0]["content"] = escaped_test
+
+    client = FakeLLMClient(responses=[resp])
+    runner = FakeTestRunner()
+    agent = QAAgent(model_name="test-model", llm_client=client, test_runner=runner)
+
+    state = create_initial_state(project_name="OrderApp", user_input="Build test suite")
+    state["requirements"] = _sample_valid_requirements()
+    state["architecture"] = _sample_valid_architecture()
+    state["task_plan"] = _sample_valid_task_plan()
+    state["code_artifacts"] = _sample_valid_code_artifacts()
+
+    result = agent.execute(state)
+    test_art = result["test_artifacts"]["tests/test_auth.py"]
+    assert "\n" in test_art.content
+    assert '\tresp = {"status": "ok"}' in test_art.content
+    assert result["workflow_status"] == STATUS_QA_COMPLETE
+
+
+def test_qa_validator_syntax_error_triggers_retry_loop():
+    """QAAgent triggers retry loop on SyntaxError in a test artifact."""
+    broken_resp = _sample_valid_qa_result_dict()
+    broken_resp["test_artifacts"][0]["content"] = "import pytest\ndef test_auth(\n    assert True\n"
+
+    valid_resp = _sample_valid_qa_result_dict()
+
+    client = FakeLLMClient(responses=[broken_resp, valid_resp])
+    runner = FakeTestRunner()
+    sleeps = []
+    agent = QAAgent(
+        model_name="test-model",
+        llm_client=client,
+        test_runner=runner,
+        sleep_fn=sleeps.append,
+    )
+
+    state = create_initial_state(project_name="OrderApp", user_input="Build test suite")
+    state["requirements"] = _sample_valid_requirements()
+    state["architecture"] = _sample_valid_architecture()
+    state["task_plan"] = _sample_valid_task_plan()
+    state["code_artifacts"] = _sample_valid_code_artifacts()
+
+    result = agent.execute(state)
+    assert result["workflow_status"] == STATUS_QA_COMPLETE
+    assert len(client.calls) == 2
+    second_prompt = client.calls[1]["prompt"]
+    assert "Syntax error in tests/test_auth.py:" in second_prompt
+    assert len(sleeps) == 0  # validation errors do not sleep
+
+

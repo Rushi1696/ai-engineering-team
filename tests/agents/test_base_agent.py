@@ -30,7 +30,11 @@ sys.path.insert(0, "/home/claude/work")
 
 import pytest
 
-from agents.base_agent import DEFAULT_MAX_RETRIES, BaseAgent
+from agents.base_agent import (
+    DEFAULT_MAX_RETRIES,
+    BaseAgent,
+    validate_and_sanitize_python_artifact,
+)
 from state.engineering_state import create_initial_state
 from state.models import AgentExecutionMetadata, ErrorRecord
 
@@ -486,4 +490,47 @@ def test_two_different_agent_instances_track_retries_independently_via_state(ini
 
     assert frontend_result["retry_counts"] == {"FrontendAgent": 1}
     assert "human_approval_required" not in frontend_result
+
+
+def test_validate_and_sanitize_python_artifact_unescapes_valid_code():
+    """Unescapes \\n, \\t, \\", \\\\ once if 0 real newlines and >= 2 literal \\n and AST parses."""
+    raw = (
+        "def hello():\\n"
+        "\\tmsg = \\\"hello world\\\"\\n"
+        "\\tpath = \\\"C:\\\\app\\\\test\\\"\\n"
+        "\\treturn msg\\n"
+    )
+    result = validate_and_sanitize_python_artifact("src/main.py", raw)
+    assert "\n" in result
+    assert "\tmsg = \"hello world\"" in result
+    assert "C:\\app\\test" in result
+    import ast
+    parsed = ast.parse(result)
+    assert isinstance(parsed, ast.Module)
+
+
+def test_validate_and_sanitize_python_artifact_raises_value_error_on_syntax_error():
+    """Raises ValueError with file path, line, and message on SyntaxError."""
+    broken = "def foo():\n    return 42 +\n"
+    with pytest.raises(ValueError) as exc_info:
+        validate_and_sanitize_python_artifact("src/broken.py", broken)
+    err = str(exc_info.value)
+    assert "Syntax error in src/broken.py:2:" in err
+
+
+def test_validate_and_sanitize_python_artifact_raises_when_unescaped_has_syntax_error():
+    """Raises ValueError with file path, line, and message when escaped code has syntax error."""
+    broken_escaped = "def foo(\\n\\treturn 42\\n"
+    with pytest.raises(ValueError) as exc_info:
+        validate_and_sanitize_python_artifact("src/broken.py", broken_escaped)
+    err = str(exc_info.value)
+    assert "Syntax error in src/broken.py:1:" in err
+
+
+def test_validate_and_sanitize_python_artifact_passes_through_non_python_files():
+    """Non-.py files are ignored by AST parsing."""
+    non_py = "const x: number = ; // invalid python"
+    result = validate_and_sanitize_python_artifact("frontend/App.tsx", non_py)
+    assert result == non_py
+
     

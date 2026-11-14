@@ -666,3 +666,67 @@ def test_frontend_input_state_task_plan_unchanged():
     assert input_tasks["TASK-002"].status == "pending"
     assert state["task_plan"] is initial_plan
 
+
+def test_frontend_validator_unescapes_escaped_newlines_on_valid_python_ast():
+    """FrontendAgent unescapes single-line .py artifact with >= 2 literal \\n when AST parses."""
+    escaped_content = (
+        "def render_chart():\\n"
+        "\\tdata = [\\\"a\\\", \\\"b\\\"]\\n"
+        "\\treturn len(data)\\n"
+    )
+    resp = _sample_valid_frontend_artifacts_dict()
+    resp["artifacts"].append({
+        "file_path": "frontend/helpers.py",
+        "language": "python",
+        "content": escaped_content,
+        "artifact_type": "frontend",
+        "produced_by": "FrontendAgent",
+        "produced_at": "2026-01-01T00:00:00Z",
+        "version": 1,
+    })
+
+    client = FakeLLMClient(responses=[resp])
+    agent = FrontendAgent(model_name="test-model", llm_client=client)
+
+    state = create_initial_state(project_name="OrderApp", user_input="Build frontend")
+    state["requirements"] = _sample_valid_requirements()
+    state["architecture"] = _sample_valid_architecture()
+    state["task_plan"] = _sample_valid_task_plan()
+
+    result = agent.execute(state)
+    helper_art = result["code_artifacts"]["frontend/helpers.py"]
+    assert "\n" in helper_art.content
+    assert '\tdata = ["a", "b"]' in helper_art.content
+    assert result["workflow_status"] == STATUS_FRONTEND_COMPLETE
+
+
+def test_frontend_validator_syntax_error_triggers_retry_loop():
+    """FrontendAgent triggers retry loop on SyntaxError in a .py artifact."""
+    broken_resp = _sample_valid_frontend_artifacts_dict()
+    broken_resp["artifacts"].append({
+        "file_path": "frontend/helpers.py",
+        "language": "python",
+        "content": "def render_chart(\n    return 42\n",
+        "artifact_type": "frontend",
+        "produced_by": "FrontendAgent",
+        "produced_at": "2026-01-01T00:00:00Z",
+        "version": 1,
+    })
+
+    valid_resp = _sample_valid_frontend_artifacts_dict()
+
+    client = FakeLLMClient(responses=[broken_resp, valid_resp])
+    agent = FrontendAgent(model_name="test-model", llm_client=client, sleep_fn=lambda s: None)
+
+    state = create_initial_state(project_name="OrderApp", user_input="Build frontend")
+    state["requirements"] = _sample_valid_requirements()
+    state["architecture"] = _sample_valid_architecture()
+    state["task_plan"] = _sample_valid_task_plan()
+
+    result = agent.execute(state)
+    assert result["workflow_status"] == STATUS_FRONTEND_COMPLETE
+    assert len(client.calls) == 2
+    second_prompt = client.calls[1]["prompt"]
+    assert "Syntax error in frontend/helpers.py:" in second_prompt
+
+

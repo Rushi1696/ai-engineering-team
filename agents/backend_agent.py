@@ -26,7 +26,12 @@ import uuid
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
-from agents.base_agent import DEFAULT_MAX_RETRIES, BaseAgent, strip_metadata_header
+from agents.base_agent import (
+    DEFAULT_MAX_RETRIES,
+    BaseAgent,
+    strip_metadata_header,
+    validate_and_sanitize_python_artifact,
+)
 from state.engineering_state import EngineeringState
 from state.models import (
     AgentExecutionMetadata,
@@ -276,6 +281,8 @@ class BackendAgent(BaseAgent):
                     f"Artifact '{norm_path}' has invalid artifact_type '{art.artifact_type}'. "
                     f"Must be one of {sorted(_VALID_ARTIFACT_TYPES)}."
                 )
+
+            art.content = validate_and_sanitize_python_artifact(norm_path, art.content)
 
     def execute(self, state: EngineeringState) -> Dict[str, Any]:
         """Execute backend code generation with internal retry loop.
