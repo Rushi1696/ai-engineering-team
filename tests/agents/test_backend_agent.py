@@ -757,4 +757,158 @@ def test_backend_prompt_includes_database_design_fields_and_created_at():
     assert "Do NOT write test files" in sys_prompt
 
 
+def test_backend_prompt_includes_flask_lifecycle_rules_for_flask_project():
+    """BackendAgent injects Flask application lifecycle constraints when architecture specifies Flask."""
+    arch = _sample_valid_architecture()
+    arch.technology_stack = {
+        "backend": "Python 3.10+ / Flask 2.x",
+        "database": "SQLite 3",
+    }
+    arch.overview = "A minimal single-file Flask application with SQLite."
+
+    broken_resp = _sample_valid_backend_artifacts_dict()
+    broken_resp["artifacts"][0]["content"] = "broken syntax (\n"
+    valid_resp = _sample_valid_backend_artifacts_dict()
+
+    client = FakeLLMClient(responses=[broken_resp, valid_resp])
+    agent = BackendAgent(model_name="test-model", llm_client=client, sleep_fn=lambda s: None)
+
+    state = create_initial_state(project_name="TodoApp", user_input="Build todo app")
+    state["requirements"] = _sample_valid_requirements()
+    state["architecture"] = arch
+    state["task_plan"] = _sample_valid_task_plan()
+
+    # Direct build_system_prompt check
+    sys_prompt = agent.build_system_prompt(arch)
+    assert "@app.before_first_request" in sys_prompt
+    assert "Flask `g`" in sys_prompt
+    assert "safely importable by pytest" in sys_prompt
+    assert "Flask application context" in sys_prompt
+    assert "explicitly initialize their own test database" in sys_prompt
+    assert "standalone execution" in sys_prompt
+    assert "main entry point" in sys_prompt
+    assert "teardown" in sys_prompt.lower()
+
+    # Execution check across initial attempt and retry
+    result = agent.execute(state)
+    assert result["workflow_status"] == STATUS_BACKEND_COMPLETE
+    assert len(client.calls) == 2
+
+    for call in client.calls:
+        sp = call["system_prompt"]
+        assert "@app.before_first_request" in sp
+        assert "Flask `g`" in sp
+        assert "safely importable by pytest" in sp
+        assert "Flask application context" in sp
+        assert "explicitly initialize their own test database" in sp
+        assert "standalone execution" in sp
+        assert "main entry point" in sp
+
+
+def test_backend_prompt_omits_flask_lifecycle_rules_for_non_flask_project():
+    """BackendAgent does NOT inject Flask lifecycle rules into non-Flask frameworks (FastAPI, Django, Express)."""
+    # 1. FastAPI
+    fastapi_arch = _sample_valid_architecture()
+    fastapi_arch.technology_stack = {
+        "backend": "Python 3.11 / FastAPI",
+        "database": "PostgreSQL 16",
+    }
+    fastapi_arch.overview = "FastAPI asynchronous REST API microservice."
+
+    client = FakeLLMClient(responses=[_sample_valid_backend_artifacts_dict()])
+    agent = BackendAgent(model_name="test-model", llm_client=client)
+
+    state = create_initial_state(project_name="OrderApp", user_input="Build FastAPI backend")
+    state["requirements"] = _sample_valid_requirements()
+    state["architecture"] = fastapi_arch
+    state["task_plan"] = _sample_valid_task_plan()
+
+    agent.execute(state)
+
+    fastapi_sys_prompt = client.calls[0]["system_prompt"]
+    assert "before_first_request" not in fastapi_sys_prompt
+    assert "Flask application context" not in fastapi_sys_prompt
+    assert "Flask Application Lifecycle Rules" not in fastapi_sys_prompt
+    assert "Flask g" not in fastapi_sys_prompt
+
+    # 2. Django
+    django_arch = _sample_valid_architecture()
+    django_arch.technology_stack = {
+        "backend": "Python 3.11 / Django 4.2",
+        "database": "PostgreSQL 16",
+    }
+    django_arch.overview = "Django monolithic service."
+    django_sys_prompt = agent.build_system_prompt(django_arch)
+    assert "before_first_request" not in django_sys_prompt
+    assert "Flask" not in django_sys_prompt
+
+    # 3. Express
+    express_arch = _sample_valid_architecture()
+    express_arch.technology_stack = {
+        "backend": "Node.js 20 / Express",
+        "database": "MongoDB 7",
+    }
+    express_arch.overview = "Node.js Express backend."
+    express_sys_prompt = agent.build_system_prompt(express_arch)
+    assert "before_first_request" not in express_sys_prompt
+    assert "Flask" not in express_sys_prompt
+
+    # 4. None / unspecified architecture
+    none_sys_prompt = agent.build_system_prompt(None)
+    assert "before_first_request" not in none_sys_prompt
+    assert "Flask" not in none_sys_prompt
+
+
+def test_backend_flask_detection_via_overview_and_dict():
+    """BackendAgent detects Flask when specified in technology_stack dict, list, or overview."""
+    client = FakeLLMClient()
+    agent = BackendAgent(model_name="test-model", llm_client=client)
+
+    # Dict architecture with Flask in technology_stack
+    dict_arch = {
+        "technology_stack": {"backend": "Flask 2.3", "database": "SQLite"},
+        "overview": "Simple app",
+    }
+    assert agent._is_flask_project(dict_arch) is True
+    assert "@app.before_first_request" in agent.build_system_prompt(dict_arch)
+
+    # Architecture with Flask in overview only
+    overview_arch = _sample_valid_architecture()
+    overview_arch.technology_stack = {"backend": "Python 3.10"}
+    overview_arch.overview = "A lightweight Flask service."
+    assert agent._is_flask_project(overview_arch) is True
+    assert "@app.before_first_request" in agent.build_system_prompt(overview_arch)
+
+    # Empty dict or non-Flask
+    assert agent._is_flask_project({}) is False
+    assert agent._is_flask_project({"technology_stack": {"backend": "Go Gin"}}) is False
+
+
+def test_backend_flask_lifecycle_rules_fallback_when_file_missing(tmp_path):
+    """BackendAgent falls back to _DEFAULT_FLASK_LIFECYCLE_RULES when template file is absent."""
+    # Create prompts dir with only system_prompt.md
+    prompts_dir = tmp_path / "prompts"
+    prompts_dir.mkdir()
+    (prompts_dir / "system_prompt.md").write_text("Base backend instructions.\n", encoding="utf-8")
+
+    client = FakeLLMClient()
+    agent = BackendAgent(model_name="test-model", llm_client=client, prompts_dir=prompts_dir)
+
+    arch = _sample_valid_architecture()
+    arch.technology_stack = {"backend": "Flask 2.3"}
+
+    sys_prompt = agent.build_system_prompt(arch)
+    assert "Base backend instructions." in sys_prompt
+    assert "@app.before_first_request" in sys_prompt
+    assert "Flask application context" in sys_prompt
+
+    # Non-Flask with custom dir does not have Flask rules
+    non_flask_arch = _sample_valid_architecture()
+    non_flask_arch.technology_stack = {"backend": "FastAPI"}
+    non_flask_sys_prompt = agent.build_system_prompt(non_flask_arch)
+    assert "Base backend instructions." in non_flask_sys_prompt
+    assert "before_first_request" not in non_flask_sys_prompt
+
+
+
 

@@ -285,7 +285,7 @@ class QAAgent(BaseAgent):
                 )
 
             try:
-                qa_result = self.llm_client.generate_structured(
+                candidate = self.llm_client.generate_structured(
                     prompt=prompt_to_use,
                     response_model=QAResult,
                     system_prompt=system_prompt,
@@ -293,13 +293,13 @@ class QAAgent(BaseAgent):
                 )
 
                 # Validate non-empty test artifacts and test plan
-                if not qa_result.test_artifacts or not qa_result.test_plan.strategy.strip():
+                if not candidate.test_artifacts or not candidate.test_plan.strategy.strip():
                     raise ValueError("QAAgent: Generated test_plan or test_artifacts is empty")
 
-                for art in qa_result.test_artifacts:
+                for art in candidate.test_artifacts:
                     art.content = validate_and_sanitize_python_artifact(art.file_path, art.content)
 
-                violations = scan_test_artifacts_safety(qa_result.test_artifacts)
+                violations = scan_test_artifacts_safety(candidate.test_artifacts)
                 if violations:
                     violation_lines = "\n".join(violations)
                     raise ValueError(
@@ -308,6 +308,7 @@ class QAAgent(BaseAgent):
                         "The sandbox is already a fresh temp dir. Use pytest tmp_path for temporary files."
                     )
 
+                qa_result = candidate
                 break
 
             except Exception as exc:

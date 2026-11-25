@@ -15,7 +15,7 @@ For the TestPlan:
 For TestArtifact entries:
 1. Generate complete, syntactically correct test files targeting backend endpoints, services, and frontend components.
 2. Put ALL tests in as few files as the task needs in the project root (default one file test_app.py), no subfolders, and import the app as "from app import app".
-3. Tests must use pytest tmp_path or tmp_path_factory for temp files, never shutil.rmtree/os.remove/subprocess/socket.
+3. Tests must use pytest tmp_path or tmp_path_factory for temp files, never shutil.rmtree/os.remove/subprocess/socket. If writing unittest.TestCase tests, do NOT call os.remove or shutil.rmtree in tearDown/tearDownClass (use in-memory SQLite ':memory:' or let the sandbox automatically clean up temporary files).
 4. Set test_type to one of "unit", "integration", "regression", "acceptance", or "e2e".
 5. Set coverage_target to the specific source file or module under test.
 

@@ -58,6 +58,18 @@ _VALID_ARTIFACT_TYPES: Set[str] = {
     "frontend",
 }
 
+_DEFAULT_FLASK_LIFECYCLE_RULES = (
+    "Flask Application Lifecycle Rules:\n"
+    "When developing Flask applications:\n"
+    "- Never use `@app.before_first_request` (removed in Flask 2.3+).\n"
+    "- Never execute database initialization or access Flask `g` at module import time.\n"
+    "- Generated Flask application modules must be safely importable by pytest.\n"
+    "- Database initialization must occur inside an active Flask application context.\n"
+    "- Tests must explicitly initialize their own test database.\n"
+    "- For standalone execution, initialize the database inside the main entry point with an application context, not during import.\n"
+    "- Keep request-scoped database connections and teardown behavior correct."
+)
+
 
 def _now_iso() -> str:
     """Current UTC time as an ISO 8601 string."""
@@ -147,6 +159,65 @@ class BackendAgent(BaseAgent):
             raise FileNotFoundError(f"Prompt template file not found: {filepath}")
         raw_text = filepath.read_text(encoding="utf-8")
         return strip_metadata_header(raw_text)
+
+    @staticmethod
+    def _is_flask_project(
+        architecture: Optional[Union[SystemArchitecture, Dict[str, Any]]]
+    ) -> bool:
+        """Determine whether the architecture targets a Flask application."""
+        if not architecture:
+            return False
+        tech_stack = None
+        overview = None
+        if isinstance(architecture, SystemArchitecture):
+            tech_stack = architecture.technology_stack
+            overview = architecture.overview
+        elif isinstance(architecture, dict):
+            tech_stack = architecture.get("technology_stack")
+            overview = architecture.get("overview")
+
+        if isinstance(tech_stack, dict):
+            for k, v in tech_stack.items():
+                if isinstance(v, str) and "flask" in v.lower():
+                    return True
+                if isinstance(k, str) and "flask" in k.lower():
+                    return True
+        elif isinstance(tech_stack, list):
+            for item in tech_stack:
+                if isinstance(item, str) and "flask" in item.lower():
+                    return True
+        elif isinstance(tech_stack, str):
+            if "flask" in tech_stack.lower():
+                return True
+
+        if overview and isinstance(overview, str) and "flask" in overview.lower():
+            return True
+
+        return False
+
+    def _load_flask_lifecycle_rules(self) -> str:
+        """Load Flask lifecycle rules from template file or fallback constant."""
+        filepath = self.prompts_dir / "flask_lifecycle_rules.md"
+        if filepath.exists():
+            return self._load_prompt("flask_lifecycle_rules.md")
+        return _DEFAULT_FLASK_LIFECYCLE_RULES
+
+    def build_system_prompt(
+        self,
+        architecture: Optional[Union[SystemArchitecture, Dict[str, Any]]] = None,
+    ) -> str:
+        """Construct the system prompt for BackendAgent, conditionally injecting framework-specific rules.
+
+        If the architecture specifies Flask, Flask application lifecycle constraints are appended.
+        For non-Flask frameworks (FastAPI, Django, Express, etc.), no framework-specific rules are injected.
+        """
+        base_prompt = self._load_prompt("system_prompt.md")
+        if self._is_flask_project(architecture):
+            flask_rules = self._load_flask_lifecycle_rules()
+            return f"{base_prompt}\n\n{flask_rules}"
+        return base_prompt
+
+    _build_system_prompt = build_system_prompt
 
     def _format_requirements(self, req: ProductRequirements) -> str:
         """Format ProductRequirements into text for prompt interpolation."""
@@ -494,7 +565,7 @@ class BackendAgent(BaseAgent):
         max_attempts = effective_max - start_retry_count
 
         # Load prompt templates
-        system_prompt = self._load_prompt("system_prompt.md")
+        system_prompt = self.build_system_prompt(architecture)
         user_template = self._load_prompt("user_prompt_template.md")
         revision_template = self._load_prompt("revision_prompt.md")
 

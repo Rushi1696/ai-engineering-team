@@ -655,6 +655,10 @@ def test_qa_ast_tripwire_in_test_artifacts_triggers_revision_and_recovers():
     assert "Use pytest tmp_path for temporary files." in second_prompt
     # TestRunner was only called once, on the successful revision
     assert len(runner.calls) == 1
+    # Verify the actual artifact scanned and passed to runner is the clean revision, not the failing one
+    passed_tests = runner.calls[0]["test_artifacts"]
+    assert passed_tests["tests/test_auth.py"].content == clean_resp["test_artifacts"][0]["content"]
+    assert "os.remove" not in passed_tests["tests/test_auth.py"].content
 
 
 def test_qa_ast_tripwire_in_code_artifacts_routes_to_debug():
@@ -701,6 +705,106 @@ def test_qa_ast_tripwire_in_code_artifacts_routes_to_debug():
     assert "test_failure: failing tests: [ast_tripwire]" in result["errors"][0].message
     assert "AST safety tripwire refused execution" in result["errors"][0].message
     assert "src/server.py:1: forbidden import 'subprocess'" in result["errors"][0].message
+
+
+def test_qa_unvalidated_failing_candidate_never_passed_to_test_runner_on_exhaustion():
+    """Failing candidate on attempt 1 is never passed to test runner if subsequent attempt fails."""
+    unsafe_resp1 = _sample_valid_qa_result_dict()
+    unsafe_resp1["test_artifacts"][0]["content"] = "import os\ndef test_bad(): os.remove('f.db')\n"
+
+    unsafe_resp2 = _sample_valid_qa_result_dict()
+    unsafe_resp2["test_artifacts"][0]["content"] = "import shutil\ndef test_bad(): shutil.rmtree('/tmp/x')\n"
+
+    client = FakeLLMClient(responses=[unsafe_resp1, unsafe_resp2])
+    runner = FakeTestRunner()
+    sleeps = []
+    agent = QAAgent(
+        model_name="test-model",
+        llm_client=client,
+        test_runner=runner,
+        max_retries=2,
+        sleep_fn=sleeps.append,
+    )
+
+    state = create_initial_state(project_name="OrderApp", user_input="Build test suite")
+    state["requirements"] = _sample_valid_requirements()
+    state["architecture"] = _sample_valid_architecture()
+    state["task_plan"] = _sample_valid_task_plan()
+    state["code_artifacts"] = _sample_valid_code_artifacts()
+
+    result = agent.execute(state)
+    assert result["human_approval_required"] is True
+    assert result["execution_metadata"]["QAAgent"].status == "failed"
+    # Crucial invariant: test runner was NEVER executed with failing/unvalidated candidates
+    assert len(runner.calls) == 0
+
+
+def test_qa_real_runner_cross_set_duplicate_executes_compliant_qa_test():
+    """Real PytestTestRunner runs compliant QA test artifact which replaces BackendAgent's same-path artifact."""
+    qa_resp = _sample_valid_qa_result_dict()
+    # QA generates a valid test that does NOT call os.remove or forbidden functions
+    qa_resp["test_artifacts"] = [
+        {
+            "file_path": "test_app.py",
+            "test_type": "unit",
+            "content": (
+                "import unittest\n"
+                "from app import app\n\n"
+                "class AppTestCase(unittest.TestCase):\n"
+                "    def test_health(self):\n"
+                "        client = app.test_client()\n"
+                "        resp = client.get('/health')\n"
+                "        self.assertEqual(resp.status_code, 200)\n"
+            ),
+        }
+    ]
+
+    client = FakeLLMClient(responses=[qa_resp])
+    runner = PytestTestRunner()
+    agent = QAAgent(model_name="test-model", llm_client=client, test_runner=runner)
+
+    backend_code = {
+        "app.py": CodeArtifact(
+            file_path="app.py",
+            language="python",
+            content=(
+                "from flask import Flask, jsonify\n"
+                "app = Flask(__name__)\n"
+                "@app.route('/health')\n"
+                "def health(): return jsonify(status='ok'), 200\n"
+            ),
+            artifact_type="backend",
+            produced_by="BackendAgent",
+            produced_at="2026-01-01T00:00:00Z",
+            version=1,
+        ),
+        # Backend wrote a placeholder test_app.py which would fail if executed
+        "test_app.py": CodeArtifact(
+            file_path="test_app.py",
+            language="python",
+            content="def test_should_be_replaced(): assert False\n",
+            artifact_type="test",
+            produced_by="BackendAgent",
+            produced_at="2026-01-01T00:00:00Z",
+            version=1,
+        ),
+    }
+
+    state = create_initial_state(project_name="OrderApp", user_input="Build test suite")
+    state["requirements"] = _sample_valid_requirements()
+    state["architecture"] = _sample_valid_architecture()
+    state["task_plan"] = _sample_valid_task_plan()
+    state["code_artifacts"] = backend_code
+
+    result = agent.execute(state)
+    assert result["workflow_status"] == STATUS_QA_COMPLETE
+    assert result["next_agent"] == "ReviewerAgent"
+    # Verify that the test passed because QA's test_app.py replaced backend's failing one
+    scratchpad = eval(result["agent_scratchpad"]["QAAgent"])
+    assert scratchpad["test_execution"]["passed"] is True
+    assert scratchpad["test_execution"]["passed_tests"] == 1
+    assert scratchpad["test_execution"]["failed_tests"] == 0
+
 
 
 
